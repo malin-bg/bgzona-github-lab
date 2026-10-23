@@ -6,7 +6,7 @@ name: BGZONA E4K atomicity probe R1
 permissions: {}
 jobs:
   probe:
-    if: github.repository_id == '1426765395' && github.actor_id == '252877943' && github.ref == 'refs/heads/lab/e4j-atomic-control' && github.run_number == 2 && github.run_attempt == 1 && github.event.created == false && github.event.deleted == false && github.event.forced == false && github.event.before == 'fba960bc0fe6be0ad5e869baa543c24a4ac7b8a5'
+    if: github.repository_id == '1426765395' && github.actor_id == '252877943' && github.ref == 'refs/heads/lab/e4j-atomic-control' && github.run_number == 3 && github.run_attempt == 1 && github.event.created == false && github.event.deleted == false && github.event.forced == false && github.event.before == '01a946210aa4bfd5daf3385773f4ab082e2c96db'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -48,7 +48,7 @@ jobs:
           EXPECTED_RULES = json.loads(r'''[{"id":25467003,"name":"BGZONA-D4B1-protected-ledger-probe","target":"branch","source_type":"Repository","source":"malin-bg/bgzona-github-lab","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/heads/lab/protected-ledger-probe"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":false,"required_reviewers":[],"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"require_extra_approval_for_unattributed_changes":false,"allowed_merge_methods":["merge","squash","rebase"]}}],"created_at":"2026-10-20T09:49:05.453Z","updated_at":"2026-10-20T09:49:05.499Z","bypass_actors":[]},{"id":25476912,"name":"BGZONA-D4B2-ledger-ff-probe","target":"branch","source_type":"Repository","source":"malin-bg/bgzona-github-lab","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/heads/lab/ledger-ff-probe"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"}],"created_at":"2026-10-20T13:13:03.114Z","updated_at":"2026-10-20T13:13:03.166Z","bypass_actors":[]}]''')
           TOKEN = os.environ.get("GH_TOKEN", "")
           SHA = os.environ.get("GITHUB_SHA", "")
-          R1_CONTROL = "fba960bc0fe6be0ad5e869baa543c24a4ac7b8a5"
+          R2_CONTROL = "01a946210aa4bfd5daf3385773f4ab082e2c96db"
           R1_BLOB = "b1b9cad0e1f97597e1880664261ddc962889c9c7"
           R1_TREE = "faa37007f0170bb17ff3617d2e75ee6ee7057d15"
           R1_COMMITS = {"main-0":"3a4b4eee4349f742f9159e69641798d08c9d9f32","witness-0":"0b42ba3386a761c2e35a5095c04ff42f9fe6265d","main-1":"83dc2c5f30a6b49d5e520f7f27f6a43ef58c7c81","witness-1":"32d3c6105acb74341526fb64e7f91661d0aa201a","main-2a":"eeb50c0c6e26a6ec6af142dfee6bef5a803564af","witness-2a":"84c7e3bec1f026c83381b4ea2e0779df4b5cbd8e","main-2b":"1a85b7ee62149a6d380cf9a31f63659608d2f205","witness-2b":"4347c447eb2ca43df6db276431ca8477158a8e22"}
@@ -58,6 +58,7 @@ jobs:
           OBJECTS = {}
           BASE_POLICY = None
           BASE_BRANCHES = None
+          EXPECTED_BRANCHES = {"lab/d4b4-token-control":False,"lab/d4b4-token-ledger":False,"lab/e4j-atomic-control":False,"lab/e4j-atomic-main":False,"lab/ledger-ff-probe":True,"lab/protected-ledger-probe":True,"main":False}
           HTTP_HEADERS = ("x-github-request-id", "x-ratelimit-remaining", "x-ratelimit-reset", "retry-after")
           
           class Stop(RuntimeError):
@@ -99,7 +100,7 @@ jobs:
               except urllib.error.HTTPError as error:
                   raw, status, h = error.read(2_000_001), error.code, error.headers
               except (OSError, TimeoutError) as error:
-                  emit("NETWORK_UNKNOWN", path=path, method=req.method, error_type=type(error).__name__)
+                  emit("NETWORK_UNKNOWN", path=path, method=req.get_method(), error_type=type(error).__name__)
                   raise Stop("UNKNOWN_HTTP_OUTCOME_NO_RETRY") from None
               need(len(raw) <= 2_000_000, "RESPONSE_LIMIT")
               try:
@@ -157,14 +158,13 @@ jobs:
               protected = {b["name"]: b["protected"] for b in branches}
               need(not protected.get("lab/e4j-atomic-control") and
                    not protected.get("lab/e4j-atomic-main", False), "TARGET_PROTECTED")
+              need(protected == EXPECTED_BRANCHES, "EXPECTED_BRANCH_PROTECTION_CHANGED")
               return details, protected
           
           def preservation():
               rules, branches = policy()
               need(rules == BASE_POLICY, "POLICY_CHANGED")
-              old = dict(branches)
-              old.pop("lab/e4j-atomic-main", None)
-              need(old == BASE_BRANCHES, "OTHER_BRANCH_PROTECTION_CHANGED")
+              need(branches == BASE_BRANCHES, "OTHER_BRANCH_PROTECTION_CHANGED")
               blob = get("/git/blobs/" + OLD_WORKFLOW)
               raw = base64.b64decode(blob["content"])
               need(git_hash("blob", raw) == OLD_WORKFLOW, "HISTORICAL_WORKFLOW_CHANGED")
@@ -296,7 +296,7 @@ jobs:
                    os.environ.get("GITHUB_REPOSITORY_OWNER_ID") == str(OWNER), "RUNTIME_REPOSITORY")
               need(os.environ.get("GITHUB_EVENT_NAME") == "push" and os.environ.get("GITHUB_REF") == CONTROL and
                    os.environ.get("GITHUB_ACTOR_ID") == str(OWNER) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1" and
-                   os.environ.get("GITHUB_RUN_NUMBER") == "2",
+                   os.environ.get("GITHUB_RUN_NUMBER") == "3",
                    "ONE_OWNER_PUSH_ATTEMPT_ONLY")
               need(os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and
                    os.environ.get("RUNNER_OS") == "Linux", "STANDARD_HOSTED_RUNNER_REQUIRED")
@@ -305,14 +305,14 @@ jobs:
                    "WORKFLOW_SOURCE_MISMATCH")
               event = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8"))
               need(event.get("created") is False and event.get("deleted") is False and
-                   event.get("forced") is False and event.get("before") == R1_CONTROL and
-                   event.get("after") == SHA, "ONE_REVIEWED_R2_CONTROL_PUSH_ONLY")
+                   event.get("forced") is False and event.get("before") == R2_CONTROL and
+                   event.get("after") == SHA, "ONE_REVIEWED_R3_CONTROL_PUSH_ONLY")
               metadata = get("")
               need(metadata["id"] == RID and metadata["node_id"] == NODE and metadata["full_name"] == REPO and
                    metadata["owner"]["id"] == OWNER and metadata["visibility"] == "public" and
                    metadata["default_branch"] == "main" and metadata["archived"] is False, "LIVE_IDENTITY")
               source = get("/commits/" + oid(SHA))
-              need([p["sha"] for p in source["parents"]] == [R1_CONTROL] and
+              need([p["sha"] for p in source["parents"]] == [R2_CONTROL] and
                    len(source["files"]) == 1 and source["files"][0]["filename"] == WORKFLOW and
                    source["files"][0]["status"] == "modified", "ONLY_REVIEWED_WORKFLOW_COMMIT")
               code = get("/git/blobs/" + source["files"][0]["sha"])
