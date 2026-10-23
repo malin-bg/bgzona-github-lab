@@ -6,7 +6,7 @@ name: BGZONA E4K atomicity probe R1
 permissions: {}
 jobs:
   probe:
-    if: github.repository_id == '1426765395' && github.actor_id == '252877943' && github.ref == 'refs/heads/lab/e4j-atomic-control' && github.run_attempt == 1 && github.event.created == true && github.event.deleted == false && github.event.forced == false
+    if: github.repository_id == '1426765395' && github.actor_id == '252877943' && github.ref == 'refs/heads/lab/e4j-atomic-control' && github.run_number == 2 && github.run_attempt == 1 && github.event.created == false && github.event.deleted == false && github.event.forced == false && github.event.before == 'fba960bc0fe6be0ad5e869baa543c24a4ac7b8a5'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -48,9 +48,13 @@ jobs:
           EXPECTED_RULES = json.loads(r'''[{"id":25467003,"name":"BGZONA-D4B1-protected-ledger-probe","target":"branch","source_type":"Repository","source":"malin-bg/bgzona-github-lab","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/heads/lab/protected-ledger-probe"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":false,"required_reviewers":[],"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"require_extra_approval_for_unattributed_changes":false,"allowed_merge_methods":["merge","squash","rebase"]}}],"created_at":"2026-10-20T09:49:05.453Z","updated_at":"2026-10-20T09:49:05.499Z","bypass_actors":[]},{"id":25476912,"name":"BGZONA-D4B2-ledger-ff-probe","target":"branch","source_type":"Repository","source":"malin-bg/bgzona-github-lab","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/heads/lab/ledger-ff-probe"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"}],"created_at":"2026-10-20T13:13:03.114Z","updated_at":"2026-10-20T13:13:03.166Z","bypass_actors":[]}]''')
           TOKEN = os.environ.get("GH_TOKEN", "")
           SHA = os.environ.get("GITHUB_SHA", "")
+          R1_CONTROL = "fba960bc0fe6be0ad5e869baa543c24a4ac7b8a5"
+          R1_BLOB = "b1b9cad0e1f97597e1880664261ddc962889c9c7"
+          R1_TREE = "faa37007f0170bb17ff3617d2e75ee6ee7057d15"
+          R1_COMMITS = {"main-0":"3a4b4eee4349f742f9159e69641798d08c9d9f32","witness-0":"0b42ba3386a761c2e35a5095c04ff42f9fe6265d","main-1":"83dc2c5f30a6b49d5e520f7f27f6a43ef58c7c81","witness-1":"32d3c6105acb74341526fb64e7f91661d0aa201a","main-2a":"eeb50c0c6e26a6ec6af142dfee6bef5a803564af","witness-2a":"84c7e3bec1f026c83381b4ea2e0779df4b5cbd8e","main-2b":"1a85b7ee62149a6d380cf9a31f63659608d2f205","witness-2b":"4347c447eb2ca43df6db276431ca8477158a8e22"}
           START = time.monotonic()
           LOCK = threading.Lock()
-          COUNTS = {"updateRefs": 0, "objects": 0, "payload_bytes": 0}
+          COUNTS = {"updateRefs": 0, "objects": 0, "payload_bytes": 0, "reused_objects": 0}
           OBJECTS = {}
           BASE_POLICY = None
           BASE_BRANCHES = None
@@ -168,9 +172,35 @@ jobs:
                    historical_workflow_blob=OLD_WORKFLOW,
                    historical_workflow_sha256=hashlib.sha256(raw).hexdigest())
           
+          def reuse_object(kind, expected, payload, raw):
+              need(kind in ("blob", "tree", "commit"), "OBJECT_KIND")
+              oid(expected)
+              candidates = [raw, raw[:-1]] if kind == "commit" and raw.endswith(b"\n") else [raw]
+              matched = [candidate for candidate in candidates if git_hash(kind, candidate) == expected]
+              need(len(matched) == 1 and expected not in OBJECTS, "R1_OBJECT_PIN_MISMATCH")
+              remote = get("/git/" + {"blob":"blobs","tree":"trees","commit":"commits"}[kind] + "/" + expected)
+              need(remote["sha"] == expected, "R1_OBJECT_UNAVAILABLE_OR_CHANGED")
+              if kind == "blob":
+                  need(base64.b64decode(remote["content"]) == raw, "R1_BLOB_BYTES")
+              elif kind == "tree":
+                  entries = [{k: entry[k] for k in ("path","mode","type","sha")} for entry in remote["tree"]]
+                  need(not remote["truncated"] and entries == payload["tree"], "R1_TREE_ENTRIES")
+              else:
+                  need(remote["tree"]["sha"] == payload["tree"] and
+                       [p["sha"] for p in remote["parents"]] == payload["parents"] and
+                       remote["message"] in (payload["message"], payload["message"][:-1]), "R1_COMMIT_FIELDS")
+                  need(remote["author"] == payload["author"] and remote["committer"] == payload["committer"],
+                       "R1_COMMIT_PERSON")
+              need(COUNTS["reused_objects"] < 10, "R1_REUSE_LIMIT")
+              COUNTS["reused_objects"] += 1
+              OBJECTS[expected] = (kind, matched[0])
+              emit("OBJECT_REUSED", type=kind, sha=expected, bytes=len(matched[0]),
+                   sha256=hashlib.sha256(matched[0]).hexdigest())
+              return expected
+
           def create_object(kind, payload, raw):
               need(kind in ("blob", "tree", "commit"), "OBJECT_KIND")
-              need(COUNTS["objects"] < 20 and COUNTS["payload_bytes"] + len(raw) <= 32768, "OBJECT_BUDGET")
+              need(COUNTS["objects"] < 3 and 2180 + COUNTS["payload_bytes"] + len(raw) <= 32768, "OBJECT_BUDGET")
               # Count attempts, not successes: a lost response never authorizes another POST.
               COUNTS["objects"] += 1
               COUNTS["payload_bytes"] += len(raw)
@@ -195,8 +225,12 @@ jobs:
               who = PERSON["name"] + " <" + PERSON["email"] + "> " + str(epoch) + " +0000"
               raw = ("tree " + tree + "\n" + "".join("parent " + p + "\n" for p in parents)
                      + "author " + who + "\ncommitter " + who + "\n\n" + message).encode()
-              sha = create_object("commit", {"message": message, "tree": tree, "parents": parents,
-                                            "author": PERSON, "committer": PERSON}, raw)
+              payload = {"message": message, "tree": tree, "parents": parents,
+                         "author": PERSON, "committer": PERSON}
+              if label in R1_COMMITS:
+                  return reuse_object("commit", R1_COMMITS[label], payload, raw)
+              need(label in ("witness-3","main-3","witness-4"), "ONLY_REMAINING_COMMITS")
+              sha = create_object("commit", payload, raw)
               remote = get("/git/commits/" + sha)
               need(remote["sha"] == sha and remote["tree"]["sha"] == tree and
                    [p["sha"] for p in remote["parents"]] == parents and remote["message"] in (message, message[:-1]), "COMMIT_READBACK")
@@ -210,13 +244,14 @@ jobs:
                   oid(value)
               need(all(value != ZERO and value in OBJECTS and OBJECTS[value][0] == "commit" for value in after),
                    "ONLY_VERIFIED_SYNTHETIC_TARGETS")
-              need(all(value == ZERO or value in OBJECTS for value in before), "ONLY_SYNTHETIC_BASES")
+              need(all(value != ZERO and value in OBJECTS and OBJECTS[value][0] == "commit" for value in before),
+                   "R2_EXISTING_SYNTHETIC_BASES_ONLY")
               entries = [{"name": name, "beforeOid": old, "afterOid": new, "force": False}
                          for name, old, new in zip((MAIN, WITNESS), before, after)]
               need(set(e["name"] for e in entries) == {MAIN, WITNESS} and
                    not ({MAIN, WITNESS} & set(HISTORICAL)), "REF_ALLOWLIST")
               with LOCK:
-                  need(COUNTS["updateRefs"] < 10, "MUTATION_BUDGET")
+                  need(COUNTS["updateRefs"] < 9, "MUTATION_BUDGET")
                   COUNTS["updateRefs"] += 1
               request = {"query": MUTATION, "variables": {"input": {
                   "repositoryId": NODE, "clientMutationId": label, "refUpdates": entries}}}
@@ -238,7 +273,7 @@ jobs:
               messages = " ".join(str(e.get("message", "")) for e in errors).lower()
               need(not re.search(r"permission|forbidden|not accessible|rate.limit|quota|billing|policy|ruleset|protected branch",
                                  messages), "UNRELATED_PROVIDER_REFUSAL")
-              need(all(e.get("type") == "UNPROCESSABLE" for e in errors), "UNCLASSIFIED_GRAPHQL_ERROR")
+              need(all(e.get("type") == "UNPROCESSABLE" for e in errors), "UNRESOLVED_UNCLASSIFIED_GRAPHQL_ERROR")
               pattern = (r"expected|beforeoid|does not (?:point|match)|mismatch|is at|stale|old (?:value|oid)"
                          if reason == "stale" else r"fast.forward")
               need(re.search(pattern, messages), "REJECTION_REASON_NOT_VERIFIED")
@@ -260,7 +295,8 @@ jobs:
                    os.environ.get("GITHUB_REPOSITORY_ID") == str(RID) and
                    os.environ.get("GITHUB_REPOSITORY_OWNER_ID") == str(OWNER), "RUNTIME_REPOSITORY")
               need(os.environ.get("GITHUB_EVENT_NAME") == "push" and os.environ.get("GITHUB_REF") == CONTROL and
-                   os.environ.get("GITHUB_ACTOR_ID") == str(OWNER) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
+                   os.environ.get("GITHUB_ACTOR_ID") == str(OWNER) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1" and
+                   os.environ.get("GITHUB_RUN_NUMBER") == "2",
                    "ONE_OWNER_PUSH_ATTEMPT_ONLY")
               need(os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and
                    os.environ.get("RUNNER_OS") == "Linux", "STANDARD_HOSTED_RUNNER_REQUIRED")
@@ -268,17 +304,17 @@ jobs:
                    os.environ.get("GITHUB_WORKFLOW_REF") == REPO + "/" + WORKFLOW + "@" + CONTROL,
                    "WORKFLOW_SOURCE_MISMATCH")
               event = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8"))
-              need(event.get("created") is True and event.get("deleted") is False and
-                   event.get("forced") is False and event.get("before") == ZERO and
-                   event.get("after") == SHA, "INITIAL_CONTROL_PUSH_ONLY")
+              need(event.get("created") is False and event.get("deleted") is False and
+                   event.get("forced") is False and event.get("before") == R1_CONTROL and
+                   event.get("after") == SHA, "ONE_REVIEWED_R2_CONTROL_PUSH_ONLY")
               metadata = get("")
               need(metadata["id"] == RID and metadata["node_id"] == NODE and metadata["full_name"] == REPO and
                    metadata["owner"]["id"] == OWNER and metadata["visibility"] == "public" and
                    metadata["default_branch"] == "main" and metadata["archived"] is False, "LIVE_IDENTITY")
               source = get("/commits/" + oid(SHA))
-              need([p["sha"] for p in source["parents"]] == [HISTORICAL["refs/heads/main"]] and
+              need([p["sha"] for p in source["parents"]] == [R1_CONTROL] and
                    len(source["files"]) == 1 and source["files"][0]["filename"] == WORKFLOW and
-                   source["files"][0]["status"] == "added", "ONLY_REVIEWED_WORKFLOW_COMMIT")
+                   source["files"][0]["status"] == "modified", "ONLY_REVIEWED_WORKFLOW_COMMIT")
               code = get("/git/blobs/" + source["files"][0]["sha"])
               code_bytes = base64.b64decode(code["content"])
               need(git_hash("blob", code_bytes) == source["files"][0]["sha"], "SOURCE_BLOB")
@@ -286,8 +322,9 @@ jobs:
                    workflow_sha256=hashlib.sha256(code_bytes).hexdigest(),
                    run_id=os.environ.get("GITHUB_RUN_ID"), attempt=1, actor_id=OWNER,
                    runner_environment=os.environ["RUNNER_ENVIRONMENT"], python=sys.version,
-                   limits={"mutations":10,"objects":20,"payload_bytes":32768,"job_minutes":10})
-              check_refs(None, "initial-data-refs-absent")
+                   limits={"r2_mutations":9,"r1_plus_r2_mutations":11,"new_objects":3,
+                           "r1_plus_r2_objects":13,"payload_bytes":32768,"job_minutes":10})
+              check_refs((R1_COMMITS["main-0"], R1_COMMITS["witness-0"]), "R2-pinned-existing-seed")
               BASE_POLICY, BASE_BRANCHES = policy()
               preservation()
               identity, _ = http("/graphql", {"query":
@@ -296,16 +333,16 @@ jobs:
               need(not identity.get("errors") and identity.get("data", {}).get("node") ==
                    {"id":NODE,"databaseId":RID,"nameWithOwner":REPO,"isPrivate":False}, "GRAPHQL_IDENTITY")
               payload = b"BGZONA-E4K SYNTHETIC TEXT ONLY\n"
-              blob = create_object("blob", {"content":payload.decode(), "encoding":"utf-8"}, payload)
+              blob = reuse_object("blob", R1_BLOB, {"content":payload.decode(), "encoding":"utf-8"}, payload)
               tree_raw = b"100644 probe.txt\0" + bytes.fromhex(blob)
-              tree = create_object("tree", {"tree":[{"path":"probe.txt","mode":"100644","type":"blob","sha":blob}]}, tree_raw)
+              tree = reuse_object("tree", R1_TREE, {"tree":[{"path":"probe.txt","mode":"100644","type":"blob","sha":blob}]}, tree_raw)
               pair0 = (commit("main-0", tree), commit("witness-0", tree))
               pair1 = (commit("main-1", tree, pair0[0]), commit("witness-1", tree, pair0[1]))
               pair_a = (commit("main-2a", tree, pair1[0]), commit("witness-2a", tree, pair1[1]))
               pair_b = (commit("main-2b", tree, pair1[0]), commit("witness-2b", tree, pair1[1]))
-              current = case("01-init", None, (ZERO,ZERO), pair0)
-              case("02-stale-main", current, (pair1[0],pair0[1]), pair1, "stale")
-              case("03-stale-witness", current, (pair0[0],pair1[1]), pair1, "stale")
+              current = pair0  # R1 initialization is reused; R2 never creates refs.
+              case("02-stale-main", current, (pair_a[0],pair0[1]), pair1, "stale")
+              case("03-stale-witness", current, (pair0[0],pair_a[1]), pair1, "stale")
               current = case("04-ff-pair", current, current, pair1)
               case("05-nonff-main", current, current, (pair0[0],pair_a[1]), "nonff")
               case("06-nonff-witness", current, current, (pair_a[0],pair0[1]), "nonff")
@@ -335,9 +372,11 @@ jobs:
               emit("CASE_PASS", label="09-simulated-missing-response", simulation=True, pair=final_pair)
               preservation()
               check_refs(final_pair, "final")
-              need(COUNTS["updateRefs"] == 10 and COUNTS["objects"] == 13 and COUNTS["payload_bytes"] <= 32768,
+              need(COUNTS["updateRefs"] == 9 and COUNTS["objects"] == 3 and
+                   COUNTS["reused_objects"] == 10 and 2180 + COUNTS["payload_bytes"] <= 32768,
                    "FINAL_BUDGET_ACCOUNTING")
-              emit("RESULT", status="PASS", cases=9, counters=COUNTS, final_pair=final_pair,
+              emit("RESULT", status="PASS", r2_cases=8, r1_init_reused=True,
+                   r1_plus_r2_mutations=2+COUNTS["updateRefs"], counters=COUNTS, final_pair=final_pair,
                    duration_seconds=round(time.monotonic()-START,3), app_s_verified=False,
                    cross_repository_atomicity=False, production_ready=False, routine_intake="NO-GO")
           
@@ -345,7 +384,8 @@ jobs:
               try:
                   run()
               except Exception as error:
-                  emit("RESULT", status="STOP", reason=str(error) if isinstance(error,Stop) else type(error).__name__,
+                  emit("RESULT", status=("UNRESOLVED" if str(error).startswith("UNRESOLVED_") else "STOP"),
+                       reason=str(error) if isinstance(error,Stop) else type(error).__name__,
                        counters=COUNTS, duration_seconds=round(time.monotonic()-START,3))
                   # Read-only evidence after any unexpected result. Never repair/retry a write.
                   try:
