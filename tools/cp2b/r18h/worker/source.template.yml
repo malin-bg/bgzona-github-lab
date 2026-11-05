@@ -1,0 +1,43 @@
+{
+  "name": "R18H isolated STANDARD source",
+  "on": {
+    "push": {
+      "branches": [
+        "cp2b-private-standard-source-r1"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    "actions": "read"
+  },
+  "jobs": {
+    "source": {
+      "if": "github.repository_id == '1429436685' && !github.event.created && !github.event.deleted && !github.event.forced",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 4,
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "WORKER_COMMIT": "__R18H_WORKER__",
+        "MANIFEST_SHA256": "__R18H_MANIFEST__",
+        "MODE": "source"
+      },
+      "steps": [
+        {
+          "name": "Verify immutable worker and execute",
+          "shell": "bash",
+          "run": "set -euo pipefail\n[[ \"$WORKER_COMMIT\" =~ ^[0-9a-f]{40}$ && \"$MANIFEST_SHA256\" =~ ^[0-9a-f]{64}$ ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-worker.XXXXXXXX\")\napi=https://api.github.com/repos/malin-bg/bgzona-private-intake/contents/tools/cp2b/r18h\nget() {\n  curl --disable --silent --fail --proto '=https' --max-time 15 \\\n    -H \"Authorization: Bearer $GH_TOKEN\" \\\n    -H 'Accept: application/vnd.github.raw+json' \\\n    -H 'X-GitHub-Api-Version: 2026-03-10' \"$api/$1?ref=$WORKER_COMMIT\" -o \"$2\"\n}\nget worker.sha256 \"$work/worker.sha256\"\nprintf '%s  %s\\n' \"$MANIFEST_SHA256\" \"$work/worker.sha256\" | sha256sum --check --status\nmkdir \"$work/worker\"\nwhile read -r digest name; do\n  [[ \"$digest\" =~ ^[0-9a-f]{64}$ && \"$name\" =~ ^[a-z0-9_.-]+\\.(py|json|yml)$ && ! -e \"$work/worker/$name\" ]]\n  get \"worker/$name\" \"$work/worker/$name\"\ndone < \"$work/worker.sha256\"\n(cd \"$work/worker\" && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; sys.argv=[sys.argv[0],sys.argv[3]]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"standard_entry\",run_name=\"__main__\")' \"$work/worker\" \"$work/deps\" \"$MODE\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "cp2b-push-facts-r1-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "${{ runner.temp }}/push-facts.json",
+            "if-no-files-found": "error",
+            "retention-days": 1
+          }
+        }
+      ]
+    }
+  }
+}

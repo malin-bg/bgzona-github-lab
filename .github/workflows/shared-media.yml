@@ -1,0 +1,270 @@
+{
+  "name": "R18H controlled independent D3 and DEV",
+  "run-name": "R18H ${{ inputs.mode }} ${{ inputs.mode == 'prepare' && inputs.source_run || inputs.record_sha256 }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "mode": {
+          "type": "choice",
+          "options": [
+            "prepare",
+            "accept",
+            "next",
+            "recover",
+            "assets",
+            "assets-read",
+            "project",
+            "dev-pin"
+          ],
+          "required": true
+        },
+        "record_sha256": {
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        "source_run": {
+          "type": "string",
+          "required": false,
+          "default": ""
+        }
+      }
+    }
+  },
+  "permissions": {},
+  "concurrency": {
+    "group": "r18h-controlled-dev",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "ledger-accept": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'accept')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "r18h-control",
+      "permissions": {
+        "contents": "write",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-private-intake",
+            "permission-contents": "read",
+            "permission-actions": "write"
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PRIVATE_ACTIONS_TOKEN": "${{ steps.app.outputs.token }}",
+            "PRIVATE_WORKFLOW_COMMIT": "58293804386a29159946dab2bdd1c02c547819fb",
+            "PRIVATE_DISPATCH_ACTOR": "353092585"
+          },
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        }
+      ]
+    },
+    "ledger-read": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'recover')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "r18h-control",
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-private-intake",
+            "permission-contents": "read",
+            "permission-actions": "write"
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PRIVATE_ACTIONS_TOKEN": "${{ steps.app.outputs.token }}",
+            "PRIVATE_WORKFLOW_COMMIT": "58293804386a29159946dab2bdd1c02c547819fb",
+            "PRIVATE_DISPATCH_ACTOR": "353092585"
+          },
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        }
+      ]
+    },
+    "assets": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'assets')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "r18h-assets",
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_S_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_S_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-assets",
+            "permission-contents": "write"
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "ASSETS_APP_TOKEN": "${{ steps.app.outputs.token }}"
+          },
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        }
+      ]
+    },
+    "public-read": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'assets-read' || inputs.mode == 'dev-pin')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {},
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "r18h-dev-input-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/r18h-dev-input/",
+            "if-no-files-found": "error",
+            "retention-days": 1
+          },
+          "if": "inputs.mode == 'dev-pin'"
+        }
+      ]
+    },
+    "private-prepare": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'prepare' || inputs.mode == 'next')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "r18h-control",
+      "permissions": {
+        "contents": "write",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-private-intake",
+            "permission-contents": "read",
+            "permission-actions": "write"
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PRIVATE_ACTIONS_TOKEN": "${{ steps.app.outputs.token }}",
+            "PRIVATE_WORKFLOW_COMMIT": "58293804386a29159946dab2bdd1c02c547819fb",
+            "PRIVATE_DISPATCH_ACTOR": "353092585"
+          },
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        }
+      ]
+    },
+    "project": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'project')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "write"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Verify immutable control code and execute",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
+        }
+      ]
+    }
+  }
+}
