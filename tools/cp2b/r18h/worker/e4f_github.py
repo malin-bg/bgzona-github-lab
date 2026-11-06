@@ -3,10 +3,12 @@
 The transport does not mint a D3 intent or an E4M claim. The coordinator must
 supply its sealed intent and durable replay barrier before enabling this port.
 """
+import base64
 import json
 import re
 import time
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from github_backend import NativeReply, SessionIdentity, oid, sha
@@ -190,6 +192,56 @@ GRANT_STEP = 'CORE-GUARD fresh reservation'
 OBSERVE_STEP = 'CORE-GUARD verified existing reservation'
 
 
+# One stopped R18H acceptance. Workflow run number is provider-assigned and unique;
+# the existing workflow and context checks permit only its first attempt.
+RESUME_CANDIDATE = '4856e887ca71096a7f533c5e42e11dfe09a19e58059045903964d737455fdf2d'
+RESUME_PROPOSAL_SHA = 'f22f0f7f729f28f070019f4d7be9144527b8d1edc41e4190678b2e8a0f307a2d'
+RESUME_CONTROL_WORKFLOW = 408732936
+RESUME_RUN_NUMBER = 5
+RESUME_FAILED_RUN = 42232045490
+RESUME_FAILED_JOB = 127940113963
+RESUME_FAILED_COMMIT = 'bff24d66403b35aee30adb83ab561c1b1cd7d3ae'
+RESUME_FAILED_LOG_SHA = '52a04363ab404d5a6ebf18f8e205f1649bf0fdc867b00fda8da58669fed3d1e5'
+RESUME_FAILED_LINE = b'2026-11-06T14:13:59.1760255Z STOP E4F_GUARD_RUN_IDENTITY'
+RESUME_GUARD_RUN = 42232074394
+RESUME_GUARD_JOB = 127940210424
+RESUME_GUARD_TITLE = 'E4F D3 guard b10f4ae83c65c1fbde7fade1046b3af37c3e94eabb34883827c95d7c3294f56e'
+RESUME_GUARD_WORKFLOW = 408733315
+RESUME_GUARD_CODE = '58293804386a29159946dab2bdd1c02c547819fb'
+RESUME_GUARD_ACTOR = 353092585
+RESUME_HANDOFF_HEAD = '21407c9ecbd52690001bb7fc519ad9fe536bff7b'
+RESUME_RECOVERY_HEAD = '231dd3a08bca95225aaab67ec9981e28490198d0'
+RESUME_RECOVERY_TREE = 'd1e94313e5e1f87d0232929740e190b03f9beae1'
+RESUME_RECOVERY_REF = 'refs/heads/cp2b-private-standard-recovery-r1'
+RESUME_MARKER_PATH = (
+    'private-recovery/59158db7f72baa807f6fe34868aad962a511e25a70252f5ce96b53f37195dfc3/'
+    '8b953e8b2cc675b1df3d69be57c18403a8955adaf746313aea728e569fa7c866/checkpoint.json'
+)
+RESUME_MARKER_BLOB = 'c91a76c5d3a4628394230203cb779aeb8de20e94'
+RESUME_MARKER_SHA = 'e119ae65abafef71eaccf84a4de8a25946b8ebb27364bf202402ec7893b11908'
+
+
+def _failed_job_log(token):
+    opener = build_opener(NoRedirect)
+    endpoint = f'https://api.github.com/repos/{CONTROL}/actions/jobs/{RESUME_FAILED_JOB}/logs'
+    req = Request(endpoint, headers={'Authorization': 'Bearer '+token,
+        'Accept': 'application/vnd.github+json', 'User-Agent': 'bgzona-e4f/1',
+        'X-GitHub-Api-Version': '2026-03-10'})
+    try:
+        with opener.open(req, timeout=15):
+            raise ProviderStop('E4F_RESUME_LOG_REDIRECT')
+    except HTTPError as exc:
+        target = exc.headers.get('Location', '')
+        url = urlsplit(target)
+        require(exc.code == 302 and url.scheme == 'https' and url.port in (None, 443) and
+                not url.username and not url.password and url.hostname and
+                url.hostname.endswith('.blob.core.windows.net'), 'E4F_RESUME_LOG_REDIRECT')
+    with opener.open(Request(target), timeout=15) as stream:
+        raw = stream.read(2_000_001)
+    require(len(raw) <= 2_000_000 and digest(raw) == RESUME_FAILED_LOG_SHA and
+            raw.splitlines().count(RESUME_FAILED_LINE) == 1, 'E4F_RESUME_PRE_CAS_LOG')
+
+
 class PrivateGuardAttester:
     """Use the existing E4F R App (PRIVATE Contents read, Actions write)."""
 
@@ -232,28 +284,98 @@ class PrivateGuardAttester:
             status, row = self.request(root + f'/actions/runs/{run_id}', self.token)
             require(status in (200, 404), 'E4F_GUARD_RUN_UNRESOLVED')
             if status == 200:
-                require((row['id'], row['run_attempt'], row['workflow_id'], row['head_sha'],
-                         row['head_branch'], row['path'].split('@')[0], row['event'],
-                         row['repository']['id'], row['actor']['id'], row['display_title']) ==
-                        (run_id, 1, workflow_id, self.commit, GUARD_BRANCH, workflow_path,
-                         'workflow_dispatch', PRIVATE_ID, self.actor, 'E4F D3 guard ' + proof),
-                        'E4F_GUARD_RUN_IDENTITY')
+                require(row['id'] == run_id, 'E4F_GUARD_RUN_IDENTITY')
                 if row['status'] == 'completed':
-                    require(row['conclusion'] == 'success', 'E4F_GUARD_RUN_STOP')
+                    self._check_completed(row, run_id, workflow_id, workflow_path,
+                                          'E4F D3 guard ' + proof)
                     break
+                require(row['status'] in ('queued', 'requested', 'waiting', 'pending', 'in_progress'),
+                        'E4F_GUARD_RUN_UNRESOLVED')
             require(self.clock() < deadline, 'E4F_GUARD_RUN_UNRESOLVED')
             self.sleep(2)
-        status, jobs = self.request(root + f'/actions/runs/{run_id}/attempts/1/jobs', self.token)
+        return self._job_evidence(run_id, mode)
+
+    def _check_completed(self, row, run_id, workflow_id, workflow_path, title):
+        require((row['id'], row['run_attempt'], row['workflow_id'], row['head_sha'],
+                 row['head_branch'], row['path'].split('@')[0], row['event'],
+                 row['repository']['id'], row['actor']['id'], row['display_title']) ==
+                (run_id, 1, workflow_id, self.commit, GUARD_BRANCH, workflow_path,
+                 'workflow_dispatch', PRIVATE_ID, self.actor, title), 'E4F_GUARD_RUN_IDENTITY')
+        require(row['status'] == 'completed' and row['conclusion'] == 'success', 'E4F_GUARD_RUN_STOP')
+
+    def _job_evidence(self, run_id, mode, expected_job=None):
+        status, jobs = self.request(f'/repos/{PRIVATE}/actions/runs/{run_id}/attempts/1/jobs', self.token)
         require(status == 200 and jobs['total_count'] == len(jobs['jobs']) == 1,
                 'E4F_GUARD_JOB_IDENTITY')
         job, = jobs['jobs']
         require((job['run_id'], job['run_attempt'], job['name'], job['conclusion']) ==
                 (run_id, 1, GRANT_JOB, 'success'), 'E4F_GUARD_JOB_IDENTITY')
+        if expected_job is not None:
+            require(job['id'] == expected_job and job['head_sha'] == self.commit,
+                    'E4F_GUARD_JOB_IDENTITY')
         evidence = [step['name'] for step in job['steps'] if step['conclusion'] == 'success' and
                     step['name'] in (GRANT_STEP, OBSERVE_STEP)]
         require(len(evidence) == 1 and (mode == 'reserve' or evidence == [OBSERVE_STEP]),
                 'E4F_GUARD_JOB_EVIDENCE')
         return 'fresh' if evidence == [GRANT_STEP] else 'existing'
+
+
+    def verify_reserved(self, token, control_commit):
+        def get(repo, path, credential):
+            status, row = self.request('/repos/' + repo + path, credential)
+            require(status == 200, 'E4F_RESUME_PROVIDER')
+            return row
+
+        require((self.workflow_id, self.commit, self.actor) ==
+                (RESUME_GUARD_WORKFLOW, RESUME_GUARD_CODE, RESUME_GUARD_ACTOR),
+                'E4F_RESUME_GUARD_SCOPE')
+        title = 'R18H accept ' + RESUME_CANDIDATE
+        control_path = '.github/workflows/shared-media.yml'
+        for run, number, commit, state in (
+            (self.control_run, RESUME_RUN_NUMBER, control_commit, ('in_progress', None)),
+            (RESUME_FAILED_RUN, 4, RESUME_FAILED_COMMIT, ('completed', 'failure')),
+        ):
+            row = get(CONTROL, f'/actions/runs/{run}', token)
+            require((row['id'], row['run_number'], row['run_attempt'], row['workflow_id'],
+                     row['head_sha'], row['head_branch'], row['path'].split('@')[0],
+                     row['event'], row['repository']['id'], row['actor']['id'],
+                     row['triggering_actor']['id'], row['display_title'],
+                     (row['status'], row['conclusion'])) ==
+                    (run, number, 1, RESUME_CONTROL_WORKFLOW, commit, 'automation-control',
+                     control_path, 'workflow_dispatch', CONTROL_ID, 252877943, 252877943,
+                     title, state), 'E4F_RESUME_CONTROL_RUN')
+        job = get(CONTROL, f'/actions/jobs/{RESUME_FAILED_JOB}', token)
+        require((job['id'], job['run_id'], job['run_attempt'], job['head_sha'],
+                 job['name'], job['status'], job['conclusion']) ==
+                (RESUME_FAILED_JOB, RESUME_FAILED_RUN, 1, RESUME_FAILED_COMMIT,
+                 'ledger-accept', 'completed', 'failure') and
+                [(step['name'], step['conclusion']) for step in job['steps']
+                 if step['conclusion'] == 'failure'] ==
+                [('Verify immutable control code and execute', 'failure')],
+                'E4F_RESUME_PRE_CAS_JOB')
+        _failed_job_log(token)
+
+        guard = get(PRIVATE, f'/actions/runs/{RESUME_GUARD_RUN}', self.token)
+        self._check_completed(guard, RESUME_GUARD_RUN, self.workflow_id,
+                              GUARD_WORKFLOW_PATH, RESUME_GUARD_TITLE)
+        require(guard['triggering_actor']['id'] == self.actor and
+                self._job_evidence(RESUME_GUARD_RUN, 'reserve', RESUME_GUARD_JOB) == 'fresh',
+                'E4F_RESUME_GUARD_EVIDENCE')
+        commit = get(PRIVATE, '/git/commits/' + RESUME_RECOVERY_HEAD, self.token)
+        require((commit['sha'], commit['tree']['sha'], [p['sha'] for p in commit['parents']]) ==
+                (RESUME_RECOVERY_HEAD, RESUME_RECOVERY_TREE, [RESUME_HANDOFF_HEAD]),
+                'E4F_RESUME_RECOVERY_ANCESTRY')
+        marker = get(PRIVATE, '/contents/' + RESUME_MARKER_PATH + '?ref=' + RESUME_RECOVERY_HEAD,
+                     self.token)
+        require((marker['path'], marker['sha'], marker['type'], marker['encoding']) ==
+                (RESUME_MARKER_PATH, RESUME_MARKER_BLOB, 'file', 'base64') and
+                0 < marker['size'] <= 1024 and len(marker['content']) <= 1500, 'E4F_RESUME_MARKER')
+        raw = base64.b64decode(''.join(marker['content'].splitlines()), validate=True)
+        require(len(raw) == marker['size'] and digest(raw) == RESUME_MARKER_SHA,
+                'E4F_RESUME_MARKER')
+        head = get(PRIVATE, '/git/ref/' + RESUME_RECOVERY_REF.removeprefix('refs/'), self.token)
+        require((head['ref'], head['object']['type'], head['object']['sha']) ==
+                (RESUME_RECOVERY_REF, 'commit', RESUME_RECOVERY_HEAD), 'E4F_RESUME_RECOVERY_MOVED')
 
 
 class GitHubLedgerAppend:
@@ -372,6 +494,19 @@ class GitHubLedgerAppend:
             seen = self.observe(tip, previous, record)
             require(seen is not None, 'E4F_LEDGER_UNRESOLVED')
             return 'OBSERVED', seen
+        return self._commit_once(tip, previous, record, payload)
+
+    def append_reserved(self, item, control_commit):
+        require(self.token is not None and type(self.attester) is PrivateGuardAttester and
+                oid(control_commit) and control_commit != RESUME_FAILED_COMMIT and
+                digest(data(item)) == RESUME_PROPOSAL_SHA and
+                digest(data(item['record'])) == RESUME_CANDIDATE, 'E4F_RESUME_PROPOSAL')
+        tip, previous, record = item['ledger_parent'], item['previous'], item['record']
+        payload = ledger_cas_payload(tip, previous, record)
+        self.attester.verify_reserved(self.token, control_commit)
+        return self._commit_once(tip, previous, record, payload)
+
+    def _commit_once(self, tip, previous, record, payload):
         require(self.observe(tip, previous, record) is None, 'E4F_LEDGER_MOVED')
         reply = None
         try:

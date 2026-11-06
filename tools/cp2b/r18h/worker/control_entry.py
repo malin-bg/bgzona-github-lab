@@ -10,7 +10,8 @@ import sys
 
 import github_backend as gb
 from e4f_github import (ASSETS, CONTROL, CONTROL_ID, LEDGER, ATOMIC, GitHubLedgerAppend,
-                        GitHubNativeAtomic, PrivateGuardAttester, ProviderStop, github, require)
+                        GitHubNativeAtomic, PrivateGuardAttester, ProviderStop, RESUME_CANDIDATE,
+                        github, require)
 from git_transport import Lab, MAIN, WITNESS, Session, files
 from importer import data, digest, parse
 from standard_entry import BOOTSTRAP, PIN, control_run, proposal, public_asset, public_baseline, public_release
@@ -29,7 +30,6 @@ RESUME_PRIVATE_SHA='58293804386a29159946dab2bdd1c02c547819fb'
 RESUME_ACTOR=353092585
 RESUME_REGISTRATION='4b6841993efe58080f3212366b78ac0d3b905e44'
 RESUME_HANDOFF='21407c9ecbd52690001bb7fc519ad9fe536bff7b'
-RESUME_CANDIDATE='4856e887ca71096a7f533c5e42e11dfe09a19e58059045903964d737455fdf2d'
 RESUME_SOURCE_ARTIFACT=(13490857727,'a658d82a2c04489032691fab7495636275b2a38e6af8a6ab42894ef52840ea2a')
 RESUME_PRIVATE_ARTIFACT=(13493237223,'3278798b68a0284c43116c80ddc0c760e9a8853c6d850828683d9a6721f33b78')
 
@@ -460,8 +460,11 @@ def main(env):
         attester=attach_guard(env)
         token=env['GH_TOKEN'] if mode=='accept' else None
         ledger=GitHubLedgerAppend(token,attester)
-        action=ledger.append if mode=='accept' else ledger.recover
-        status,commit=action(item['ledger_parent'],item['previous'],item['record'])
+        if mode=='accept' and params['record_sha256']==RESUME_CANDIDATE:
+            status,commit=ledger.append_reserved(item,env['GITHUB_WORKFLOW_SHA'])
+        else:
+            action=ledger.append if mode=='accept' else ledger.recover
+            status,commit=action(item['ledger_parent'],item['previous'],item['record'])
         print('E4F_LEDGER_READBACK',status,commit,params['record_sha256'])
     elif mode in ('assets','assets-read'):
         materialize(env,mode,item)
