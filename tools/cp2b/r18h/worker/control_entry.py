@@ -19,6 +19,19 @@ ASSETS_ID=1173521221
 DEV='malin-bg/bgzona-win-dev'
 STAGES=('refs/heads/r18h-staging-authority','refs/heads/r18h-staging-witness')
 CONTROL_REF='refs/heads/automation-control'
+RESUME_SOURCE_RUN=42194020254
+RESUME_PRIVATE_RUN=42198381507
+RESUME_SOURCE='0259760e45c7041ab3789560ff8ed6048c093eeb'
+RESUME_WORKER='61216eb28fa155f7186bbcb03d2e23edc2f57b2e'
+RESUME_MANIFEST='936b02a8825d74164b8f9fff511ea2a3baf70a5633170edae183d0d302f40c8b'
+RESUME_SOURCE_YAML='9b8e1d39466f3f9b4a628895282aea7269d050df553f3855d3e8796a22ef538c'
+RESUME_PRIVATE_SHA='58293804386a29159946dab2bdd1c02c547819fb'
+RESUME_ACTOR=353092585
+RESUME_REGISTRATION='4b6841993efe58080f3212366b78ac0d3b905e44'
+RESUME_HANDOFF='21407c9ecbd52690001bb7fc519ad9fe536bff7b'
+RESUME_CANDIDATE='4856e887ca71096a7f533c5e42e11dfe09a19e58059045903964d737455fdf2d'
+RESUME_SOURCE_ARTIFACT=(13490857727,'a658d82a2c04489032691fab7495636275b2a38e6af8a6ab42894ef52840ea2a')
+RESUME_PRIVATE_ARTIFACT=(13493237223,'3278798b68a0284c43116c80ddc0c760e9a8853c6d850828683d9a6721f33b78')
 
 
 def context(env):
@@ -31,8 +44,13 @@ def context(env):
     control_run(int(env['GITHUB_RUN_ID']))
     params=parse(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
     require(type(params) is dict and 'mode' in params and
-            set(params)<={'mode','record_sha256','source_run'}, 'E4F_CONTROL_INPUT')
-    params={'record_sha256':'','source_run':''}|params
+            set(params)<={'mode','record_sha256','source_run','private_run'}, 'E4F_CONTROL_INPUT')
+    params={'record_sha256':'','source_run':'','private_run':''}|params
+    if params['mode']=='resume-prepare':
+        require((params['source_run'],params['private_run'],params['record_sha256'])==
+                (str(RESUME_SOURCE_RUN),str(RESUME_PRIVATE_RUN),''), 'E4F_RESUME_SCOPE')
+        return params
+    require(params['private_run']=='','E4F_CONTROL_INPUT')
     if params['mode']=='prepare':
         require(params['source_run'].isdigit() and int(params['source_run'])>0 and
                 params['record_sha256']=='', 'E4F_CONTROL_INPUT')
@@ -255,7 +273,71 @@ def immutable_release(env, tag, payloads):
     return observed
 
 
-def private_candidate(env, mode, source_run, previous):
+def verify_resume_source(api, env):
+    from media_preflight import WORKFLOW as source_path
+    from registration_entry import pinned_file
+    import push_artifact
+
+    require((env['PRIVATE_WORKFLOW_COMMIT'],int(env['PRIVATE_DISPATCH_ACTOR']))==
+            (RESUME_PRIVATE_SHA,RESUME_ACTOR),'E4F_RESUME_WORKER_PIN')
+    pins=parse(BOOTSTRAP.read_bytes())
+    row,_=api.get(f'/actions/runs/{RESUME_SOURCE_RUN}/attempts/1')
+    require((row['id'],row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
+             row['head_branch'],row['repository']['id'],row['actor']['id'],
+             row['path'].split('@',1)[0],row['status'],row['conclusion'])==
+            (RESUME_SOURCE_RUN,1,push_artifact.WORKFLOW,'push',RESUME_SOURCE,
+             pins['source_ref'].removeprefix('refs/heads/'),PIN.numeric_id,
+             gb.CP2B_OWNER_ID,source_path,'completed','success'),'E4F_RESUME_SOURCE_RUN')
+    row,_=api.get('/git/ref/'+pins['source_ref'].removeprefix('refs/'))
+    require((row['ref'],row['object']['type'],row['object']['sha'])==
+            (pins['source_ref'],'commit',RESUME_SOURCE),'E4F_RESUME_SOURCE_REF')
+    row,_=api.get('/git/commits/'+RESUME_SOURCE)
+    require(row['sha']==RESUME_SOURCE and [p['sha'] for p in row['parents']]==[pins['source_parent']],
+            'E4F_RESUME_SOURCE_PARENT')
+    workflow=pinned_file(api,source_path,RESUME_SOURCE)
+    require(digest(workflow)==RESUME_SOURCE_YAML,'E4F_RESUME_SOURCE_WORKER')
+    prepare=pinned_file(api,'.github/workflows/e4f-standard-prepare.yml',RESUME_PRIVATE_SHA)
+    prepared_env=parse(prepare)['jobs']['prepare']['env']
+    require((prepared_env['WORKER_COMMIT'],prepared_env['MANIFEST_SHA256'],
+             prepared_env['TRUSTED_DISPATCH_ACTOR'])==(RESUME_WORKER,RESUME_MANIFEST,str(RESUME_ACTOR)),
+            'E4F_RESUME_WORKER_PIN')
+    artifact,sha=RESUME_SOURCE_ARTIFACT
+    row,_=api.get(f'/actions/artifacts/{artifact}')
+    link=row['workflow_run']
+    require((row['id'],row['name'],row['expired'],row['digest'],link['id'],link['repository_id'],
+             link['head_sha'])==(artifact,push_artifact.name(RESUME_SOURCE_RUN,1),False,'sha256:'+sha,
+             RESUME_SOURCE_RUN,PIN.numeric_id,RESUME_SOURCE),'E4F_RESUME_SOURCE_ARTIFACT')
+
+
+def verify_resume_refs(api, item, pins):
+    from private_queue import request_identity
+    from queued_pipeline import _handoff_slot
+
+    h=item['handoff']
+    request=request_identity(PIN.numeric_id,pins['source_parent'],RESUME_SOURCE)
+    require((h['request'],h['mirror'],h['head'],h['parent'],item['ledger_parent'],
+             digest(data(item['record'])))==(request,pins['record_sha256'],RESUME_HANDOFF,
+             RESUME_REGISTRATION,pins['ledger'],RESUME_CANDIDATE),'E4F_RESUME_HANDOFF')
+    for child,parent in ((RESUME_REGISTRATION,pins['recovery_bootstrap']),
+                         (RESUME_HANDOFF,RESUME_REGISTRATION)):
+        row,_=api.get('/git/commits/'+child)
+        require(row['sha']==child and [p['sha'] for p in row['parents']]==[parent],
+                'E4F_RESUME_RECOVERY_ANCESTRY')
+    _,slot=_handoff_slot(request,pins['record_sha256'])
+    listing,_=api.get('/git/trees/'+row['tree']['sha']+'?recursive=1')
+    blobs={x['path']:x['size'] for x in listing['tree'] if x['type']=='blob'}
+    require(listing['truncated'] is False and len(blobs)==3 and
+            blobs.get(slot)==h['size'] and 12_000_000<h['size']<=16_000_000,
+            'E4F_RESUME_RECOVERY_TREE')
+    row,_=api.get('/git/ref/'+pins['recovery_ref'].removeprefix('refs/'))
+    require((row['ref'],row['object']['type'],row['object']['sha'])==
+            (pins['recovery_ref'],'commit',RESUME_HANDOFF),'E4F_RESUME_RECOVERY_REF')
+    status,row=github('/repos/'+CONTROL+'/git/ref/'+LEDGER.removeprefix('refs/'))
+    require(status==200 and (row['ref'],row['object']['type'],row['object']['sha'])==
+            (LEDGER,'commit',pins['ledger']),'E4F_RESUME_LEDGER_REF')
+
+
+def private_candidate(env, mode, source_run, previous, *, existing_run=None):
     import time
     from push_probe import GitHub
     from registration_entry import read_archive
@@ -271,11 +353,17 @@ def private_candidate(env, mode, source_run, previous):
     require(gb.oid(worker_commit) and wf['path']==private_path and wf['state']=='active' and
             gb.positive(wf['id']),'E4F_PRIVATE_PREPARE_PIN')
     args={'source_run':str(source_run)} if mode=='prepare' else {'previous_record':previous}
-    prefix='/repos/'+PIN.name
-    status,resp=github(prefix+f"/actions/workflows/{wf['id']}/dispatches",token,
-                       {'ref':'main','inputs':args,'return_run_details':True})
-    require(status==200 and gb.positive(resp['workflow_run_id']),'E4F_PRIVATE_DISPATCH_UNRESOLVED')
-    run=resp['workflow_run_id']
+    if existing_run is not None:
+        require((mode,source_run,existing_run)==('prepare',RESUME_SOURCE_RUN,RESUME_PRIVATE_RUN),
+                'E4F_RESUME_SCOPE')
+        verify_resume_source(api,env)
+        run=existing_run
+    else:
+        prefix='/repos/'+PIN.name
+        status,resp=github(prefix+f"/actions/workflows/{wf['id']}/dispatches",token,
+                           {'ref':'main','inputs':args,'return_run_details':True})
+        require(status==200 and gb.positive(resp['workflow_run_id']),'E4F_PRIVATE_DISPATCH_UNRESOLVED')
+        run=resp['workflow_run_id']
     end=time.monotonic()+360
     title='R18H '+mode+' '+next(iter(args.values()))
     while True:
@@ -286,15 +374,17 @@ def private_candidate(env, mode, source_run, previous):
                 raise ProviderStop('E4F_PRIVATE_RUN_UNRESOLVED') from None
             time.sleep(3)
             continue
-        require((row['id'],row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
-                 row['head_branch'],row['repository']['id'],row['actor']['id'],
-                 row['path'].split('@',1)[0],row['display_title'])==
-                (run,1,wf['id'],'workflow_dispatch',worker_commit,'main',PIN.numeric_id,
-                 int(env['PRIVATE_DISPATCH_ACTOR']),private_path,title),'E4F_PRIVATE_RUN_PIN')
+        require(row['id']==run,'E4F_PRIVATE_RUN_PIN')
         if row['status']=='completed':
+            require((row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
+                     row['head_branch'],row['repository']['id'],row['actor']['id'],
+                     row['path'].split('@',1)[0],row['display_title'])==
+                    (1,wf['id'],'workflow_dispatch',worker_commit,'main',PIN.numeric_id,
+                     int(env['PRIVATE_DISPATCH_ACTOR']),private_path,title),'E4F_PRIVATE_RUN_PIN')
             require(row['conclusion']=='success','E4F_PRIVATE_PREPARE_STOP')
             break
-        require(time.monotonic()<end,'E4F_PRIVATE_RUN_UNRESOLVED')
+        # A run ID alone grants no trust. Allow only bounded GETs until final metadata.
+        require(existing_run is None and time.monotonic()<end,'E4F_PRIVATE_RUN_UNRESOLVED')
         time.sleep(3)
     jobs,_=api.get(f'/actions/runs/{run}/attempts/1/jobs')
     require(jobs['total_count']==len(jobs['jobs'])==1 and
@@ -310,6 +400,9 @@ def private_candidate(env, mode, source_run, previous):
             0<asset['size_in_bytes']<=limit and
             (link['id'],link['repository_id'],link['head_sha'])==(run,PIN.numeric_id,worker_commit),
             'E4F_PRIVATE_ARTIFACT')
+    if existing_run is not None:
+        artifact,sha=RESUME_PRIVATE_ARTIFACT
+        require((asset['id'],asset['digest'])==(artifact,'sha256:'+sha),'E4F_RESUME_ARTIFACT_PIN')
     wire=read_archive(api,asset['id'],limit=limit)
     require(len(wire)==asset['size_in_bytes'] and asset['digest']=='sha256:'+digest(wire),
             'E4F_PRIVATE_ARTIFACT_DIGEST')
@@ -344,6 +437,8 @@ def private_candidate(env, mode, source_run, previous):
     (domain.archives/backup['file']).write_bytes(raw)
     require(domain.verify_backup(ctx,record)['recoverable'],'E4F_PRIVATE_BACKUP')
     identity=digest(data(record))
+    if existing_run is not None:
+        verify_resume_refs(api,item,pins)
     immutable_release(env,'r18h-d3-'+identity,{'proposal.json':blob,backup['file']:raw})
     print('E4F_D3_PROPOSAL_READY',identity)
 
@@ -351,6 +446,10 @@ def private_candidate(env, mode, source_run, previous):
 def main(env):
     params=context(env)
     mode=params['mode']
+    if mode=='resume-prepare':
+        private_candidate(env,'prepare',int(params['source_run']),None,
+                          existing_run=int(params['private_run']))
+        return
     if mode=='prepare':
         private_candidate(env,mode,int(params['source_run']),None)
         return

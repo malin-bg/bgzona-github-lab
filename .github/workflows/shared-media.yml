@@ -1,6 +1,6 @@
 {
   "name": "R18H controlled independent D3 and DEV",
-  "run-name": "R18H ${{ inputs.mode }} ${{ inputs.mode == 'prepare' && inputs.source_run || inputs.record_sha256 }}",
+  "run-name": "R18H ${{ inputs.mode }} ${{ (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256 }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -8,6 +8,7 @@
           "type": "choice",
           "options": [
             "prepare",
+            "resume-prepare",
             "accept",
             "next",
             "recover",
@@ -24,6 +25,11 @@
           "default": ""
         },
         "source_run": {
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        "private_run": {
           "type": "string",
           "required": false,
           "default": ""
@@ -198,7 +204,7 @@
       ]
     },
     "private-prepare": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'prepare' || inputs.mode == 'next')",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'prepare' || inputs.mode == 'next' || inputs.mode == 'resume-prepare')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "environment": "r18h-control",
