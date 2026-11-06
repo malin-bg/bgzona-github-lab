@@ -378,6 +378,10 @@ class PrivateGuardAttester:
                 (RESUME_RECOVERY_REF, 'commit', RESUME_RECOVERY_HEAD), 'E4F_RESUME_RECOVERY_MOVED')
 
 
+class _LedgerReadPending(ProviderStop):
+    """A read may be retried without authorizing a new mutation."""
+
+
 class GitHubLedgerAppend:
     """One verified D2 append with a durable E4M fence in the PRIVATE repo."""
 
@@ -387,7 +391,16 @@ class GitHubLedgerAppend:
         self.token, self.attester, self.request = token, attester, request
 
     def _get(self, suffix):
-        status, row = self.request('/repos/' + CONTROL + suffix)
+        try:
+            status, row = self.request('/repos/' + CONTROL + suffix)
+        except (TimeoutError, ConnectionError):
+            raise _LedgerReadPending('E4F_LEDGER_READ') from None
+        except ProviderStop as exc:
+            if str(exc) != 'E4F_PROVIDER_UNRESOLVED':
+                raise
+            raise _LedgerReadPending('E4F_LEDGER_READ') from None
+        if status in (404, 408, 429, 500, 502, 503, 504):
+            raise _LedgerReadPending('E4F_LEDGER_READ')
         require(status == 200 and type(row) is dict, 'E4F_LEDGER_READ')
         return row
 
@@ -464,8 +477,22 @@ class GitHubLedgerAppend:
                 require(successor == record, 'E4F_LEDGER_CONFLICT')
                 applied = commit
             prior_files, current = files, successor
-        require(self._head() == head, 'E4F_LEDGER_MOVED')
+        if self._head() != head:
+            raise _LedgerReadPending('E4F_LEDGER_MOVED')
         return applied
+
+    def _confirm(self, tip, previous, record):
+        # The same immutable record is checked by GET on every attempt.
+        for delay in (0, 1, 2, 4, 8, 15):
+            if delay:
+                time.sleep(delay)
+            try:
+                seen = self.observe(tip, previous, record)
+            except _LedgerReadPending:
+                continue
+            if seen is not None:
+                return seen
+        raise ProviderStop('E4F_LEDGER_UNRESOLVED')
 
     def recover(self, tip, previous, record):
         """An independent reader only observes; it cannot authorize another append."""
@@ -473,8 +500,8 @@ class GitHubLedgerAppend:
         ledger_cas_payload(tip, previous, record)
         try:
             permit = self.attester.attest('observe', tip, digest(data(record)))
-            seen = self.observe(tip, previous, record)
-            require(permit == 'existing' and seen is not None, 'E4F_LEDGER_UNRESOLVED')
+            require(permit == 'existing', 'E4F_LEDGER_UNRESOLVED')
+            seen = self._confirm(tip, previous, record)
         except Exception:
             raise ProviderStop('E4F_LEDGER_UNRESOLVED') from None
         return 'OBSERVED', seen
@@ -487,13 +514,11 @@ class GitHubLedgerAppend:
         record_sha = digest(data(record))
         permit = self.attester.attest('observe' if seen else 'reserve', tip, record_sha)
         if seen:
-            require(permit == 'existing' and self.observe(tip, previous, record) == seen,
+            require(permit == 'existing' and self._confirm(tip, previous, record) == seen,
                     'E4F_LEDGER_UNRESOLVED')
             return 'OBSERVED', seen
         if permit != 'fresh':
-            seen = self.observe(tip, previous, record)
-            require(seen is not None, 'E4F_LEDGER_UNRESOLVED')
-            return 'OBSERVED', seen
+            return 'OBSERVED', self._confirm(tip, previous, record)
         return self._commit_once(tip, previous, record, payload)
 
     def append_reserved(self, item, control_commit):
@@ -518,8 +543,8 @@ class GitHubLedgerAppend:
         except Exception:
             pass  # An HTTP outcome is never authorization to repeat the CAS.
         try:
-            seen = self.observe(tip, previous, record)
-            require(seen is not None and (reply is None or reply == seen), 'E4F_LEDGER_UNRESOLVED')
+            seen = self._confirm(tip, previous, record)
+            require(reply is None or reply == seen, 'E4F_LEDGER_UNRESOLVED')
         except Exception:
             raise ProviderStop('E4F_LEDGER_UNRESOLVED') from None
         return ('APPENDED' if reply == seen else 'OBSERVED'), seen

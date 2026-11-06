@@ -14,7 +14,7 @@ from importer import data, digest, parse
 import github_backend as gb
 import push_artifact as artifact
 import push_probe as proof
-from media_preflight import GitReader, verify_delta
+from media_preflight import GitReader, media_snapshot, verify_delta
 from private_queue import PrivateQueue, TrustedRegistration
 from queued_pipeline import prepare_registered_next, _handoff_payload
 from registration_entry import read_archive
@@ -58,6 +58,24 @@ class SourceReader(GitReader):
         return row['object']['sha']
 
 
+def c3_source_pins(api, repo, pins, source):
+    c3 = pins.get('c3')
+    if c3 is None:
+        return pins
+    parent = value(repo, 'show', '-s', '--format=%P', source)
+    require(gb.oid(parent), 'C3_SOURCE_PARENT')
+    row, _ = api.get('/git/commits/' + parent)
+    require(row['sha'] == parent and [p['sha'] for p in row['parents']] == [c3['source_previous']]
+            and row['tree']['sha'] == value(repo, 'show', '-s', '--format=%T', parent),
+            'C3_BOOTSTRAP_PARENT')
+    changed = git(repo, 'diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only',
+                  '-z', c3['source_previous'], parent).stdout.decode().split(chr(0))
+    require(set(changed) == {PATH, '', *c3['add'], *c3['remove']}, 'C3_BOOTSTRAP_DELTA')
+    reader = SourceReader(repo, api, parent, source)
+    require(media_snapshot(reader, parent) == c3['mirror'], 'C3_BOOTSTRAP_MIRROR')
+    return pins | {'source_parent':parent, 'recovery_ref':c3['recovery_ref']}
+
+
 def source_identity(api, repo, pins, source, run, attempt, event=None):
     require(type(run) is int and run>0 and attempt==1 and gb.oid(source) and
             pins['source_ref']==SOURCE_REF and gb.oid(pins['source_parent']), 'STANDARD_SOURCE_SCOPE')
@@ -90,9 +108,15 @@ def source_identity(api, repo, pins, source, run, attempt, event=None):
         proof.prove(api, event, source, before, datetime.now(timezone.utc), ref=SOURCE_REF)
     require(event['before']==before and event['after']==source, 'STANDARD_SOURCE_IDENTITY')
     from dataclasses import asdict
-    pins_=verify_delta(reader, before, source, workflow_change=True)
-    require({path:asdict(obj) for path,obj in pins_.items()}==
-            parse((HERE/'media-pins.json').read_bytes()),'STANDARD_TEST_MEDIA_PIN')
+    c3 = pins.get('c3')
+    pins_=verify_delta(reader, before, source, workflow_change=c3 is None)
+    if c3 is None:
+        require({path:asdict(obj) for path,obj in pins_.items()}==
+                parse((HERE/'media-pins.json').read_bytes()),'STANDARD_TEST_MEDIA_PIN')
+    else:
+        path = c3['txt']
+        require(set(pins_) == {path} and pins_[path].sha256 == c3['txt_sha256'],
+                'C3_EXACT_TXT_EDIT')
     require(reader._ref('intake', SOURCE_REF)==source, 'STANDARD_SOURCE_MOVED')
     return reader, event
 
@@ -112,7 +136,8 @@ def registration(api, lab, source_repo, pins, *, source, run, attempt, code, man
     check_source_yaml(source_repo, source, code, manifest)
     before = original['before']
     require(gb.positive(verifier_actor) and gb.oid(pins['recovery_bootstrap']) and
-            pins['recovery_ref']==gb.STANDARD_RECOVERY_REF, 'STANDARD_RECOVERY_SCOPE')
+            pins['recovery_ref']==(pins['c3']['recovery_ref'] if 'c3' in pins else gb.STANDARD_RECOVERY_REF),
+            'STANDARD_RECOVERY_SCOPE')
     policy = gb.Policy((PIN,), (('independent_verify',verifier_actor),), code, code,
                        pins['library_id'], gb.CP2B_OWNER_ID, ())
     backend = gb.Backend(policy)
@@ -124,13 +149,14 @@ def registration(api, lab, source_repo, pins, *, source, run, attempt, code, man
     def http(write=None):
         return gb.PrivateRecoveryHTTP(PIN, gb.CP2B_OWNER_ID, code, api.token, writable=write is not None,
                                       standard_bootstrap=pins['recovery_bootstrap'],
-                                      standard_handoff=handoff, standard_write=write)
+                                      standard_handoff=handoff, standard_write=write,
+                                      standard_ref=pins['recovery_ref'])
 
     ro = http()
     node = ro.node_id(PIN.numeric_id)
 
     def recovery_head():
-        return ro.head(PIN.numeric_id, gb.STANDARD_RECOVERY_REF)
+        return ro.head(PIN.numeric_id, pins['recovery_ref'])
 
     def run_facts(r,a):
         require((r,a)==(run,attempt), 'STANDARD_SOURCE_RUN')
@@ -141,7 +167,7 @@ def registration(api, lab, source_repo, pins, *, source, run, attempt, code, man
     provider = SimpleNamespace(run_facts=run_facts,recovery_head=recovery_head)
     def client(expected, write=None):
         return gb.PrivateRecovery(PIN,node,gb.CP2B_OWNER_ID,code,ro if write is None else http(write),
-                   expected_head=expected,writable=write is not None,ref=gb.STANDARD_RECOVERY_REF)
+                   expected_head=expected,writable=write is not None,ref=pins['recovery_ref'])
 
     def reg(recovery):
         return TrustedRegistration(queue,recovery,provider,workflow=artifact.WORKFLOW,code=code)
@@ -168,6 +194,7 @@ def prepare_handoff(reg, source_repo, domain, pins):
     from authority_coordinator import LocalWitness
     require(type(domain) is LocalWitness, 'STANDARD_AUTHORITY_SCOPE')
     context = domain.read()
+    pins = pins | pins.get('c3', {})
     initial = context['latest']
     require(context['tip']==pins['ledger'] and digest(data(initial))==pins['record_sha256'] and
             (initial['primary_main'],initial['primary_witness'],initial['registry_sha256'])==
@@ -195,6 +222,7 @@ def source_main(env):
     event=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes())
     repo=root/'r18h-source.git'
     fetch_source(repo,api.token)
+    pins=c3_source_pins(api,repo,pins,source)
     check_source_yaml(repo,source,env['WORKER_COMMIT'],env['MANIFEST_SHA256'])
     source_identity(api,repo,pins,source,run,attempt,event)
     artifact.emit(env['GITHUB_EVENT_PATH'],root/artifact.FILE,run,attempt,artifact.WORKFLOW,
@@ -285,13 +313,19 @@ def public_baseline(lab, pins, *, extra=None):
     result=subprocess.run(cmd,capture_output=True,env=clean,timeout=90)
     require(result.returncode==0 and value(anchor,'rev-parse',MAIN)==tip,'STANDARD_LEDGER_FETCH')
     history=value(anchor,'rev-list','--reverse',MAIN).splitlines()
-    require(1<=len(history)<=3 and history[0]==pins['ledger'],'STANDARD_LEDGER_HISTORY')
+    c3 = pins.get('c3')
+    require(1<=len(history)<=(4 if c3 else 3) and history[0]==pins['ledger'],'STANDARD_LEDGER_HISTORY')
     files_=files(anchor,tip,('records/',))
     paths=[f'records/{i:08d}.json' for i in range(len(history))]
     require(set(files_)==set(paths),'STANDARD_LEDGER_HISTORY')
     rows=[parse(files_[p]) for p in paths]
     require(digest(data(rows[0]))==pins['record_sha256'] and rows[0]['backup']==pins['backup'],
             'STANDARD_LEDGER_GENESIS')
+    if c3:
+        require(len(rows) >= 3 and history[2] == c3['ledger'] and
+                digest(data(rows[2])) == c3['record_sha256'] and
+                (rows[2]['primary_main'], rows[2]['primary_witness'], rows[2]['registry_sha256']) ==
+                (c3['authority'], c3['witness'], c3['registry']), 'C3_LEDGER_PREDECESSOR')
     if extra is not None and extra not in rows:
         require(extra['index']==len(rows) and extra['previous']==digest(data(rows[-1])),
                 'STANDARD_BACKUP_PREDECESSOR')
@@ -334,7 +368,7 @@ def control_run(control_run, allowed_titles=None):
     return row
 
 
-def proposal(record_sha):
+def proposal(record_sha, *, c3=False):
     require(gb.sha(record_sha),'STANDARD_PROPOSAL_PIN')
     tag='r18h-d3-'+record_sha
     release=public_release(tag)
@@ -345,11 +379,18 @@ def proposal(record_sha):
     obj=parse(raw)
     require(data(obj)==raw and set(obj)=={'schema','source_run','ledger_parent','previous','record','handoff'}
             and obj['schema']==1 and gb.positive(obj['source_run']) and gb.oid(obj['ledger_parent']) and
-            digest(data(obj['record']))==record_sha and obj['record']['index'] in (1,2),
+            digest(data(obj['record']))==record_sha and obj['record']['index'] in ((3,) if c3 else (1,2)),
             'STANDARD_PROPOSAL')
     from e4f_github import ledger_cas_payload
     ledger_cas_payload(obj['ledger_parent'],obj['previous'],obj['record'])
     return obj
+
+
+def c3_control_run(run, pins):
+    row = control_run(run, {'R18H c3'})
+    require((row['workflow_id'], row['run_number'], row['status']) ==
+            (408732936, pins['c3']['control_run_number'], 'in_progress'), 'C3_CONTROL_RUN')
+    return row
 
 
 def guard_main(env):
@@ -367,19 +408,27 @@ def guard_main(env):
     verified_dispatch(api,env,path,None)
     actions=('accept',) if mode=='reserve' else ('accept','recover')
     titles={f"R18H {action} {params['record_sha256']}" for action in actions}
-    control_run(int(params['control_run']),titles)
-    item=proposal(params['record_sha256'])
+    pins=parse(BOOTSTRAP.read_bytes())
+    c3=pins.get('c3')
+    if c3:
+        c3_control_run(int(params['control_run']), pins)
+    else:
+        control_run(int(params['control_run']),titles)
+    item=proposal(params['record_sha256'],c3=c3 is not None)
+    if c3:
+        require(item['ledger_parent']==c3['ledger'] and item['record']['phase']=='staged' and
+                digest(data(item['previous']))==c3['record_sha256'], 'C3_GUARD_PREDECESSOR')
     require(item['ledger_parent']==params['ledger_parent'],'STANDARD_GUARD_LEDGER')
     p=item['handoff']
     require(set(p)=={'request','mirror','sha256','size','head','parent'},'STANDARD_HANDOFF_PIN')
     pin=gb.StandardHandoffPin(*(p[k] for k in ('request','mirror','sha256','size')))
-    pins=parse(BOOTSTRAP.read_bytes())
     root=Path(env['RUNNER_TEMP'])
     lab=Lab.create(root/'r18h-guard')
     raw=lab.root/'source.git'
     fetch_source(raw,api.token)
     run=item['source_run']
     source,_=api.get(f'/actions/runs/{run}/attempts/1')
+    pins=c3_source_pins(api,raw,pins,source['head_sha'])
     reg,client,_=registration(api,lab,raw,pins,source=source['head_sha'],run=run,attempt=1,
                     code=env['WORKER_COMMIT'],manifest=env['MANIFEST_SHA256'],
                     verifier_actor=int(env['TRUSTED_DISPATCH_ACTOR']),handoff=pin)
@@ -456,11 +505,12 @@ def preparation(api, lab, source_repo, domain, pins, *, source, run, attempt, co
                                       code=code,manifest=manifest,verifier_actor=verifier_actor)
     # An independent authority/mirror check precedes even registration I/O.
     context=domain.read()
-    require(context['tip']==pins['ledger'] and digest(data(context['latest']))==pins['record_sha256'],
+    admission=pins.get('c3',pins)
+    require(context['tip']==admission['ledger'] and digest(data(context['latest']))==admission['record_sha256'],
             'STANDARD_AUTHORITY_PIN')
-    baseline=files(context['recovered'],pins['authority'],EDITABLE)
+    baseline=files(context['recovered'],admission['authority'],EDITABLE)
     require(files(source_repo,pins['source_parent'],EDITABLE)==baseline and
-            len(baseline)==pins['mirror_files'], 'STANDARD_MIRROR_PIN')
+            len(baseline)==admission['mirror_files'], 'STANDARD_MIRROR_PIN')
     reader=register_one(reg,client,factory,run,attempt)
     prepared,pin,payload=prepare_handoff(reader,source_repo,domain,pins)
     parent=reader.recovery.expected_head
@@ -504,16 +554,26 @@ def prepare_main(env):
     root=Path(env['RUNNER_TEMP'])
     lab=Lab.create(root/'r18h-prepare')
     pins=parse(BOOTSTRAP.read_bytes())
+    c3=pins.get('c3')
+    if c3:
+        require(set(params)=={'source_run','control_run'} and params['control_run'].isdigit(),'C3_PREPARE_SCOPE')
+        c3_control_run(int(params['control_run']),pins)
     repo=lab.root/'source.git'
     fetch_source(repo,api.token)
+    pins=c3_source_pins(api,repo,pins,source['head_sha'])
     domain=public_baseline(lab,pins)
     prepared,pin,head,parent=preparation(api,lab,repo,domain,pins,source=source['head_sha'],
           run=run,attempt=1,code=env['WORKER_COMMIT'],manifest=env['MANIFEST_SHA256'],
           verifier_actor=int(env['TRUSTED_DISPATCH_ACTOR']))
     handoff={'request':pin.request,'mirror':pin.mirror,'sha256':pin.sha256,'size':pin.size,
              'head':head,'parent':parent}
-    produce_candidate(domain,prepared.operation,domain.read(),pins['witness'],
-                      run,handoff,root/'r18h-candidate')
+    item=produce_candidate(domain,prepared.operation,domain.read(),pins['witness'],
+                           run,handoff,root/'r18h-candidate')
+    if c3:
+        require(item['record']['index']==3 and item['record']['phase']=='staged' and
+                len(prepared.operation.steps)==1 and
+                (prepared.operation.steps[0]['kind'],prepared.operation.steps[0]['target_id'])==
+                ('metadata','bgzona-m-00019'), 'C3_PREPARE_PLAN')
     print('STANDARD_HANDOFF_DURABLE')
 
 

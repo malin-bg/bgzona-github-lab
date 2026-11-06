@@ -14,7 +14,8 @@ from e4f_github import (ASSETS, CONTROL, CONTROL_ID, LEDGER, ATOMIC, GitHubLedge
                         github, require)
 from git_transport import Lab, MAIN, WITNESS, Session, files
 from importer import data, digest, parse
-from standard_entry import BOOTSTRAP, PIN, control_run, proposal, public_asset, public_baseline, public_release
+from standard_entry import (BOOTSTRAP, PIN, c3_control_run, control_run, proposal, public_asset,
+                            public_baseline, public_release)
 
 ASSETS_ID=1173521221
 DEV='malin-bg/bgzona-win-dev'
@@ -46,6 +47,9 @@ def context(env):
     require(type(params) is dict and 'mode' in params and
             set(params)<={'mode','record_sha256','source_run','private_run'}, 'E4F_CONTROL_INPUT')
     params={'record_sha256':'','source_run':'','private_run':''}|params
+    if params['mode']=='c3':
+        require(all(params[k]=='' for k in ('source_run','private_run','record_sha256')), 'C3_CONTROL_INPUT')
+        return params
     if params['mode']=='resume-prepare':
         require((params['source_run'],params['private_run'],params['record_sha256'])==
                 (str(RESUME_SOURCE_RUN),str(RESUME_PRIVATE_RUN),''), 'E4F_RESUME_SCOPE')
@@ -59,7 +63,7 @@ def context(env):
     return params
 
 
-def attach_guard(env):
+def attach_guard(env, *, c3=False):
     token=env['PRIVATE_ACTIONS_TOKEN']
     rows=[]
     for name in ('e4f-d3-guard.yml','e4f-d3-guard-observe.yml'):
@@ -67,18 +71,20 @@ def attach_guard(env):
         require(status==200 and row['path']=='.github/workflows/'+name and
                 row['state']=='active' and gb.positive(row['id']),'E4F_GUARD_WORKFLOW')
         rows.append(row['id'])
+    require(not c3 or rows==[408733315,408733314], 'C3_GUARD_WORKFLOW_IDS')
     return PrivateGuardAttester(token,rows[0],env['PRIVATE_WORKFLOW_COMMIT'],
         int(env['PRIVATE_DISPATCH_ACTOR']),int(env['GITHUB_RUN_ID']),observe_workflow_id=rows[1])
 
 
-def final_state(env, item):
+def final_state(env, item, *, c3=False):
     pins=parse(BOOTSTRAP.read_bytes())
-    require(item['record']['index']==2 and item['record']['phase']=='staged','E4F_FINAL_D3_RECORD')
+    index=3 if c3 else 2
+    require(item['record']['index']==index and item['record']['phase']=='staged','E4F_FINAL_D3_RECORD')
     lab=Lab.create(Path(env['RUNNER_TEMP'])/'r18h-control-final')
     domain=public_baseline(lab,pins)
     accepted=domain.read()
-    require(len(accepted['records'])==3 and accepted['latest']==item['record'] and
-            accepted['records'][1]==item['previous'],'E4F_FINAL_D3_RECORD')
+    require(len(accepted['records'])==index+1 and accepted['latest']==item['record'] and
+            accepted['records'][index-1]==item['previous'],'E4F_FINAL_D3_RECORD')
     return pins,lab,accepted
 
 
@@ -98,11 +104,11 @@ def assets_identity(token=None):
     return row['node_id']
 
 
-def stage_assets(repo, token, after):
+def stage_assets(repo, token, after, before=(None,None)):
     current=tuple(assets_ref(r,token,missing=True) for r in STAGES)
     if current==after:
         return
-    require(current==(None,None),'E4F_ASSETS_STAGING_CONFLICT')
+    require(current==before,'E4F_ASSETS_STAGING_CONFLICT')
     env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
     encoded=base64.b64encode(('x-access-token:'+token).encode()).decode()
     env.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull,GIT_TERMINAL_PROMPT='0',
@@ -132,10 +138,11 @@ def unique_materialization(env, record_sha):
             rows[0]['run_attempt']==1,'E4F_NATIVE_DUPLICATE_WRITER')
 
 
-def materialize(env, mode, item):
-    pins,_,accepted=final_state(env,item)
+def materialize(env, mode, item, *, c3=False):
+    pins,_,accepted=final_state(env,item,c3=c3)
     record=accepted['latest']
-    before=(pins['authority'],pins['witness'])
+    baseline=pins['c3'] if c3 else pins
+    before=(baseline['authority'],baseline['witness'])
     after=(record['primary_main'],record['primary_witness'])
     token=env['ASSETS_APP_TOKEN'] if mode=='assets' else None
     node=assets_identity(token)
@@ -145,8 +152,11 @@ def materialize(env, mode, item):
         return
     require(mode=='assets' and current==before,'E4F_ASSETS_UNRESOLVED')
     identity=digest(data(record))
-    unique_materialization(env,identity)
-    stage_assets(accepted['recovered'],token,after)
+    if c3:
+        c3_control_run(int(env['GITHUB_RUN_ID']),pins)
+    else:
+        unique_materialization(env,identity)
+    stage_assets(accepted['recovered'],token,after,before if c3 else (None,None))
     provider=GitHubNativeAtomic(token=token,assets_id=ASSETS_ID,assets_node=node,
         actor=gb.CP2B_OWNER_ID,code=env['GITHUB_WORKFLOW_SHA'],ledger_commit=accepted['tip'],
         record_sha256=identity,before=before,after=after)
@@ -162,8 +172,8 @@ def materialize(env, mode, item):
     print('E4F_ASSETS_OBSERVED',*after)
 
 
-def dev_input(env, mode, item):
-    pins,lab,accepted=final_state(env,item)
+def dev_input(env, mode, item, *, c3=False):
+    pins,lab,accepted=final_state(env,item,c3=c3)
     record=accepted['latest']
     pair=(record['primary_main'],record['primary_witness'])
     assets_identity()
@@ -172,11 +182,21 @@ def dev_input(env, mode, item):
     projection=lab.root/'projection'
     session.store.project(projection)
     final=parse(files(accepted['recovered'],pair[0])['automation-state/registry.json'])
-    base=parse(files(accepted['recovered'],pins['authority'])['automation-state/registry.json'])
-    require(len(base['items'])==45 and all(final['items'].get(k)==v for k,v in base['items'].items()) and
-            set(final['items'])-set(base['items'])=={'bgzona-m-00019'} and
-            final['items']['bgzona-m-00019']['page_url']=='/poslaniya/p-00019/',
-            'E4F_DEV_BASELINE_CHANGED')
+    baseline=pins['c3'] if c3 else pins
+    base=parse(files(accepted['recovered'],baseline['authority'])['automation-state/registry.json'])
+    if c3:
+        target='bgzona-m-00019'
+        current=final['items'][target]
+        old=base['items'][target]
+        require(len(base['items'])==46 and
+                final['items']==base['items'] | {target:old | {
+                    'description':current['description'],'description_hash':baseline['txt_sha256']}} and
+                final['counters']==base['counters'], 'C3_PROJECTION_METADATA_ONLY')
+    else:
+        require(len(base['items'])==45 and all(final['items'].get(k)==v for k,v in base['items'].items()) and
+                set(final['items'])-set(base['items'])=={'bgzona-m-00019'} and
+                final['items']['bgzona-m-00019']['page_url']=='/poslaniya/p-00019/',
+                'E4F_DEV_BASELINE_CHANGED')
     items=[v for v in final['items'].values() if v['state']=='published']
     counts={'published':len(items),'kolaji':sum(v['collection']=='kolaji' for v in items),
             'poslaniya':sum(v['collection']=='poslaniya' for v in items),
@@ -215,6 +235,7 @@ def dev_input(env, mode, item):
     (folder/'input-trust.json').write_bytes(data(dict(schema=1,cid=cid,control_id=CONTROL_ID,
                   assets_id=ASSETS_ID,ledger_genesis=pins['record_sha256'],accepted=state)))
     print('E4F_DEV_ACCEPTED_CID',cid)
+    return (folder/'input-trust.json').read_bytes()
 
 
 def release_write(env, method, path, body, content_type):
@@ -337,7 +358,7 @@ def verify_resume_refs(api, item, pins):
             (LEDGER,'commit',pins['ledger']),'E4F_RESUME_LEDGER_REF')
 
 
-def private_candidate(env, mode, source_run, previous, *, existing_run=None):
+def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=False):
     import time
     from push_probe import GitHub
     from registration_entry import read_archive
@@ -353,6 +374,9 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None):
     require(gb.oid(worker_commit) and wf['path']==private_path and wf['state']=='active' and
             gb.positive(wf['id']),'E4F_PRIVATE_PREPARE_PIN')
     args={'source_run':str(source_run)} if mode=='prepare' else {'previous_record':previous}
+    if c3:
+        require(mode=='prepare' and existing_run is None and wf['id']==408733317, 'C3_PREPARE_WORKFLOW')
+        args['control_run']=env['GITHUB_RUN_ID']
     if existing_run is not None:
         require((mode,source_run,existing_run)==('prepare',RESUME_SOURCE_RUN,RESUME_PRIVATE_RUN),
                 'E4F_RESUME_SCOPE')
@@ -417,7 +441,12 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None):
         require(data(item)==blob and set(item)=={'schema','source_run','ledger_parent','previous','record','handoff'}
                 and item['schema']==1 and item['source_run']==source_run,'E4F_PRIVATE_PROPOSAL')
         record=item['record']
-        if mode=='next':
+        if c3:
+            pins=parse(BOOTSTRAP.read_bytes())['c3']
+            require((item['ledger_parent'],digest(data(item['previous'])),record['index'],record['phase'],
+                     record['primary_base'])==(pins['ledger'],pins['record_sha256'],3,'staged',pins['authority']),
+                     'C3_PRIVATE_PROPOSAL')
+        elif mode=='next':
             require(record['index']==2 and digest(data(item['previous']))==previous and
                     record['phase']=='staged','E4F_PRIVATE_PROPOSAL')
         else:
@@ -441,11 +470,141 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None):
         verify_resume_refs(api,item,pins)
     immutable_release(env,'r18h-d3-'+identity,{'proposal.json':blob,backup['file']:raw})
     print('E4F_D3_PROPOSAL_READY',identity)
+    return item
+
+
+def c3_source(env, pins):
+    import time
+    from push_probe import GitHub
+    from registration_entry import pinned_file
+
+    api=GitHub(env['PRIVATE_ACTIONS_TOKEN'])
+    path='/git/ref/heads/cp2b-private-standard-source-r1'
+    parent=env['C3_EDITORIAL_PARENT']
+    baseline=pins['c3']
+    def source_ref():
+        row,_=api.get(path)
+        require(row['ref']==pins['source_ref'] and row['object']['type']=='commit' and
+                gb.oid(row['object']['sha']), 'C3_SOURCE_REF')
+        return row['object']['sha']
+    require(gb.oid(parent) and source_ref()==parent,'C3_ARM_BEFORE_PUSH')
+    row,_=api.get('/git/ref/'+baseline['recovery_ref'].removeprefix('refs/'))
+    require(row['ref']==baseline['recovery_ref'] and row['object']['type']=='commit' and
+            row['object']['sha']==pins['recovery_bootstrap'], 'C3_RECOVERY_NOT_FRESH')
+    status,ledger=github('/repos/'+CONTROL+'/git/ref/'+LEDGER.removeprefix('refs/'))
+    require(status==200 and ledger['ref']==LEDGER and ledger['object']['sha']==baseline['ledger']
+            and tuple(assets_ref(r) for r in (MAIN,WITNESS))==(baseline['authority'],baseline['witness']),
+            'C3_ARM_BASELINE')
+    query='/actions/workflows/407190822/runs?event=push&branch=cp2b-private-standard-source-r1&per_page=100'
+    print('C3_ARMED',parent,flush=True)
+    deadline=time.monotonic()+420
+    pinned=None
+    while time.monotonic()<deadline:
+        head=source_ref()
+        if head!=parent:
+            require(pinned in (None,head),'C3_CONCURRENT_PUSH')
+            pinned=head
+            commit,_=api.get('/git/commits/'+head)
+            require(commit['sha']==head and [p['sha'] for p in commit['parents']]==[parent],'C3_SOURCE_PARENT')
+            delta,more=api.get('/compare/'+parent+'...'+head)
+            require(not more and delta['total_commits']==1 and
+                    [(f['filename'],f['status']) for f in delta['files']]==[(baseline['txt'],'modified')],
+                    'C3_SOURCE_DELTA')
+            require(digest(pinned_file(api,baseline['txt'],head))==baseline['txt_sha256'],'C3_TXT_HASH')
+            listing,more=api.get(query)
+            hits=[r for r in listing['workflow_runs'] if r['head_sha']==head]
+            require(not more and len(hits)<=1,'C3_SOURCE_RUN_COUNT')
+            if hits and hits[0]['status']=='completed':
+                row=hits[0]
+                require((row['workflow_id'],row['run_attempt'],row['repository']['id'],row['head_branch'],
+                         row['path'].split('@')[0],row['event'],row['actor']['id'],row['conclusion'])==
+                        (407190822,1,PIN.numeric_id,'cp2b-private-standard-source-r1',
+                         '.github/workflows/cp2b-push-proof.yml','push',gb.CP2B_OWNER_ID,'success')
+                        and source_ref()==head, 'C3_SOURCE_RUN')
+                return row['id']
+        else:
+            require(pinned is None,'C3_SOURCE_REWOUND')
+        time.sleep(8)
+    raise ProviderStop('C3_ARM_EXPIRED')
+
+
+def c3_dispatch_dev(env, trust):
+    import time
+
+    token=env['DEV_ACTIONS_TOKEN']
+    dev_sha=env['C3_DEV_MAIN']
+    cid=parse(trust)['cid']
+    require(gb.oid(dev_sha) and gb.sha(cid) and 0<len(trust)<=8192,'C3_DEV_INPUT')
+    root='/repos/'+DEV
+    status,branch=github(root+'/git/ref/heads/main',token)
+    require(status==200 and branch['ref']=='refs/heads/main' and branch['object']['sha']==dev_sha,'C3_DEV_HEAD')
+    status,wf=github(root+'/actions/workflows/232539432',token)
+    require(status==200 and (wf['id'],wf['path'],wf['state'])==
+            (232539432,'.github/workflows/hugo.yml','active'), 'C3_DEV_TARGET')
+    status,row=github(root+'/actions/workflows/232539432/dispatches',token,
+                      {'ref':'main','inputs':{'accepted_cid':cid,'input_trust':trust.decode('utf-8')},
+                       'return_run_details':True})
+    require(status==200 and type(row) is dict and gb.positive(row.get('workflow_run_id')),
+            'C3_DEV_DISPATCH_UNRESOLVED')
+    run=row['workflow_run_id']
+    print('C3_DEV_RUN',run,cid,flush=True)
+    deadline=time.monotonic()+660
+    while time.monotonic()<deadline:
+        status,r=github(root+f'/actions/runs/{run}',token)
+        require(status in (200,404),'C3_DEV_RUN_UNRESOLVED')
+        if status==200 and r['status']=='completed':
+            require((r['id'],r['workflow_id'],r['run_attempt'],r['repository']['id'],r['head_branch'],
+                     r['head_sha'],r['actor']['id'],r['event'],r['display_title'],r['conclusion'])==
+                    (run,232539432,1,1149689018,'main',dev_sha,353092585,'workflow_dispatch','DEV '+cid,
+                     'success'),'C3_DEV_RUN_RESULT')
+            status,j=github(root+f'/actions/runs/{run}/attempts/1/jobs',token)
+            require(status==200 and {x['name']:x['conclusion'] for x in j['jobs']}==
+                    {'build':'success','deploy':'success'} and any(
+                        step['name']=='Verify public DEV CID, page and OG against the seal' and
+                        step['conclusion']=='success' for x in j['jobs'] if x['name']=='deploy'
+                        for step in x['steps']), 'C3_DEV_PUBLIC_READBACK')
+            print('C3_PUBLIC_DEV_VERIFIED',cid,run,flush=True)
+            return
+        time.sleep(8)
+    raise ProviderStop('C3_DEV_RUN_UNRESOLVED')
+
+
+def c3_main(env):
+    pins=parse(BOOTSTRAP.read_bytes())
+    c3_control_run(int(env['GITHUB_RUN_ID']),pins)
+    phase=env['C3_PHASE']
+    if phase=='intake':
+        run=c3_source(env,pins)
+        item=private_candidate(env,'prepare',run,None,c3=True)
+        key=digest(data(item['record']))
+        require(proposal(key,c3=True)==item,'C3_PROPOSAL_READBACK')
+        ledger=GitHubLedgerAppend(env['GH_TOKEN'],attach_guard(env,c3=True))
+        status,commit=ledger.append(item['ledger_parent'],item['previous'],item['record'])
+        require(status in ('APPENDED','OBSERVED') and gb.oid(commit),'C3_D3_READBACK')
+        with open(env['GITHUB_OUTPUT'],'a',encoding='ascii') as f:
+            f.write('record='+key+'\n')
+        return
+    key=env['C3_RECORD']
+    item=proposal(key,c3=True)
+    require(item['ledger_parent']==pins['c3']['ledger'] and
+            digest(data(item['previous']))==pins['c3']['record_sha256'], 'C3_D3_PREDECESSOR')
+    if phase=='assets':
+        materialize(env,'assets',item,c3=True)
+    else:
+        require(phase=='dev','C3_CONTROL_PHASE')
+        for mode in ('project','dev-pin'):
+            temp=Path(env['RUNNER_TEMP'])/('c3-'+mode)
+            temp.mkdir()
+            raw=dev_input(env|{'RUNNER_TEMP':str(temp)},mode,item,c3=True)
+        c3_dispatch_dev(env,raw)
 
 
 def main(env):
     params=context(env)
     mode=params['mode']
+    if mode=='c3':
+        c3_main(env)
+        return
     if mode=='resume-prepare':
         private_candidate(env,'prepare',int(params['source_run']),None,
                           existing_run=int(params['private_run']))
