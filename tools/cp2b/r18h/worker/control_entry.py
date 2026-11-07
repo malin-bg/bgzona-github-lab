@@ -44,6 +44,8 @@ def context(env):
             'E4F_CONTROL_SCOPE')
     control_run(int(env['GITHUB_RUN_ID']))
     params=parse(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
+    require(params.get("schedule_run","")=="","E4F_CONTROL_INPUT")
+    params.pop("schedule_run",None)
     require(type(params) is dict and 'mode' in params and
             set(params)<={'mode','record_sha256','source_run','private_run'}, 'E4F_CONTROL_INPUT')
     params={'record_sha256':'','source_run':'','private_run':''}|params
@@ -76,15 +78,20 @@ def attach_guard(env, *, c3=False):
         int(env['PRIVATE_DISPATCH_ACTOR']),int(env['GITHUB_RUN_ID']),observe_workflow_id=rows[1])
 
 
-def final_state(env, item, *, c3=False):
+def final_state(env, item, *, c3=False, normal=False):
     pins=parse(BOOTSTRAP.read_bytes())
-    index=3 if c3 else 2
+    index=item['record']['index'] if normal else (3 if c3 else 2)
     require(item['record']['index']==index and item['record']['phase']=='staged','E4F_FINAL_D3_RECORD')
     lab=Lab.create(Path(env['RUNNER_TEMP'])/'r18h-control-final')
-    domain=public_baseline(lab,pins)
+    domain=public_baseline(lab,pins,normal=normal)
     accepted=domain.read()
     require(len(accepted['records'])==index+1 and accepted['latest']==item['record'] and
             accepted['records'][index-1]==item['previous'],'E4F_FINAL_D3_RECORD')
+    if normal:
+        from request_executor import binding
+        bound=binding(accepted["recovered"],item["record"]["primary_main"])
+        require(bound is not None and bound["final"] and bound["phase"]=="staged",
+                "AUTO_FINAL_REQUIRED")
     return pins,lab,accepted
 
 
@@ -138,11 +145,15 @@ def unique_materialization(env, record_sha):
             rows[0]['run_attempt']==1,'E4F_NATIVE_DUPLICATE_WRITER')
 
 
-def materialize(env, mode, item, *, c3=False):
-    pins,_,accepted=final_state(env,item,c3=c3)
+def materialize(env, mode, item, *, c3=False, normal=False):
+    pins,_,accepted=final_state(env,item,c3=c3,normal=normal)
     record=accepted['latest']
     baseline=pins['c3'] if c3 else pins
     before=(baseline['authority'],baseline['witness'])
+    if normal:
+        from auto_intake import last_final
+        predecessor=last_final(accepted,exclude_latest=True)
+        before=(predecessor["primary_main"],predecessor["primary_witness"])
     after=(record['primary_main'],record['primary_witness'])
     token=env['ASSETS_APP_TOKEN'] if mode=='assets' else None
     node=assets_identity(token)
@@ -152,11 +163,14 @@ def materialize(env, mode, item, *, c3=False):
         return
     require(mode=='assets' and current==before,'E4F_ASSETS_UNRESOLVED')
     identity=digest(data(record))
-    if c3:
+    if normal:
+        from auto_intake import control_run as auto_control
+        auto_control(int(env["GITHUB_RUN_ID"]))
+    elif c3:
         c3_control_run(int(env['GITHUB_RUN_ID']),pins)
     else:
         unique_materialization(env,identity)
-    stage_assets(accepted['recovered'],token,after,before if c3 else (None,None))
+    stage_assets(accepted['recovered'],token,after,before if (c3 or normal) else (None,None))
     provider=GitHubNativeAtomic(token=token,assets_id=ASSETS_ID,assets_node=node,
         actor=gb.CP2B_OWNER_ID,code=env['GITHUB_WORKFLOW_SHA'],ledger_commit=accepted['tip'],
         record_sha256=identity,before=before,after=after)
@@ -172,8 +186,8 @@ def materialize(env, mode, item, *, c3=False):
     print('E4F_ASSETS_OBSERVED',*after)
 
 
-def dev_input(env, mode, item, *, c3=False):
-    pins,lab,accepted=final_state(env,item,c3=c3)
+def dev_input(env, mode, item, *, c3=False, normal=False):
+    pins,lab,accepted=final_state(env,item,c3=c3,normal=normal)
     record=accepted['latest']
     pair=(record['primary_main'],record['primary_witness'])
     assets_identity()
@@ -184,7 +198,10 @@ def dev_input(env, mode, item, *, c3=False):
     final=parse(files(accepted['recovered'],pair[0])['automation-state/registry.json'])
     baseline=pins['c3'] if c3 else pins
     base=parse(files(accepted['recovered'],baseline['authority'])['automation-state/registry.json'])
-    if c3:
+    if normal:
+        from auto_intake import stable_registry
+        stable_registry(base,final)
+    elif c3:
         target='bgzona-m-00019'
         current=final['items'][target]
         old=base['items'][target]
@@ -234,6 +251,23 @@ def dev_input(env, mode, item, *, c3=False):
             tuple(assets_ref(r) for r in (MAIN,WITNESS))==pair,'E4F_DEV_STATE_MOVED')
     (folder/'input-trust.json').write_bytes(data(dict(schema=1,cid=cid,control_id=CONTROL_ID,
                   assets_id=ASSETS_ID,ledger_genesis=pins['record_sha256'],accepted=state)))
+    if normal:
+        from auto_intake import last_final
+        prior=last_final(accepted,exclude_latest=True)
+        old_registry=parse(files(accepted["recovered"],prior["primary_main"])["automation-state/registry.json"])
+        catalog=parse((projection/"artifact/catalog.json").read_bytes())
+        items=[]
+        for row in catalog["items"]:
+            key=row["id"]
+            if row["state"]!="published" or final["items"][key]==old_registry["items"].get(key): continue
+            old=old_registry["items"].get(key)
+            current=final["items"][key]
+            changed_original=old is None or old["revisions"][-1]["sha256"]!=current["revisions"][-1]["sha256"]
+            changed_og=changed_original or (old or {}).get("og")!=current["og"]
+            public_row=row|dict(clean_original=changed_original,clean_og=changed_og)
+            if current["og"]: public_row["og_sha256"]=current["og"]["sha256"]
+            items.append(public_row)
+        (folder/"public-verification.json").write_bytes(data(dict(cid=cid,items=items)))
     print('E4F_DEV_ACCEPTED_CID',cid)
     return (folder/'input-trust.json').read_bytes()
 
@@ -358,7 +392,7 @@ def verify_resume_refs(api, item, pins):
             (LEDGER,'commit',pins['ledger']),'E4F_RESUME_LEDGER_REF')
 
 
-def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=False):
+def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=False, normal=False):
     import time
     from push_probe import GitHub
     from registration_entry import read_archive
@@ -374,6 +408,9 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     require(gb.oid(worker_commit) and wf['path']==private_path and wf['state']=='active' and
             gb.positive(wf['id']),'E4F_PRIVATE_PREPARE_PIN')
     args={'source_run':str(source_run)} if mode=='prepare' else {'previous_record':previous}
+    if normal:
+        require(mode=="prepare" and existing_run is None and wf["id"]==408733317,"AUTO_PREPARE_WORKFLOW")
+        args.update(route="auto",control_run=env["GITHUB_RUN_ID"])
     if c3:
         require(mode=='prepare' and existing_run is None and wf['id']==408733317, 'C3_PREPARE_WORKFLOW')
         args['control_run']=env['GITHUB_RUN_ID']
@@ -441,7 +478,10 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
         require(data(item)==blob and set(item)=={'schema','source_run','ledger_parent','previous','record','handoff'}
                 and item['schema']==1 and item['source_run']==source_run,'E4F_PRIVATE_PROPOSAL')
         record=item['record']
-        if c3:
+        if normal:
+            require(record["index"]==item["previous"]["index"]+1 and
+                    record["phase"] in ("accepted","staged"),"AUTO_PRIVATE_PROPOSAL")
+        elif c3:
             pins=parse(BOOTSTRAP.read_bytes())['c3']
             require((item['ledger_parent'],digest(data(item['previous'])),record['index'],record['phase'],
                      record['primary_base'])==(pins['ledger'],pins['record_sha256'],3,'staged',pins['authority']),
@@ -459,7 +499,7 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     require(digest(raw)==backup['sha256'],'E4F_PRIVATE_BACKUP')
     pins=parse(BOOTSTRAP.read_bytes())
     lab=Lab.create(Path(env['RUNNER_TEMP'])/'r18h-control-proposal')
-    domain=public_baseline(lab,pins)
+    domain=public_baseline(lab,pins,normal=normal)
     ctx=domain.read()
     require(ctx['tip']==item['ledger_parent'] and ctx['latest']==item['previous'],
             'E4F_PRIVATE_PROPOSAL_BASE')
@@ -600,6 +640,10 @@ def c3_main(env):
 
 
 def main(env):
+    inputs=parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes()).get("inputs",{})
+    if inputs.get("mode")=="auto":
+        from auto_intake import main as auto_main
+        return auto_main(env)
     params=context(env)
     mode=params['mode']
     if mode=='c3':

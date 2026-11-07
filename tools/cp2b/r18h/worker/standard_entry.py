@@ -175,7 +175,32 @@ def registration(api, lab, source_repo, pins, *, source, run, attempt, code, man
     return reg(client(current)), client, reg
 
 
+
+def register_chained(reg, client, reg_factory, run, attempt):
+    """Use the existing durable envelope chain; return a read-only verified client."""
+    require(reg.standard_chain and not reg.recovery.writable, "STANDARD_REGISTRATION_SCOPE")
+    reg.queue._accepted_view = None
+    head, proven, runs, cursor, previous, _ = reg._read()
+    reg.restore()
+    facts = reg._facts(run, attempt)
+    if run in runs:
+        require(runs[run]["facts"] == facts, "STANDARD_REGISTRATION_RUN_CONFLICT")
+        reader = reg_factory(client(head))
+        require(reader.restore() == [tuple(row) for row in proven], "STANDARD_REGISTRATION_READBACK")
+        return reader
+    packet = reg._envelope(facts, cursor, len(proven), previous)
+    path = f"private-recovery/{reg.scope}/{reg._slot(facts)}/checkpoint.json"
+    writer = reg_factory(client(head, (head, path, digest(data(packet)))))
+    require(writer.register(run, attempt) == "REGISTERED", "STANDARD_REGISTRATION_UNRESOLVED")
+    reader = reg_factory(client(reg.provider.recovery_head()))
+    require(not reader.recovery.writable and
+            reader.restore() == [tuple(row) for row in proven + packet["rows"]],
+            "STANDARD_REGISTRATION_READBACK")
+    return reader
+
 def register_one(reg, client, reg_factory, run, attempt):
+    if reg.standard_chain:
+        return register_chained(reg, client, reg_factory, run, attempt)
     head, rows, _, cursor, previous, _ = reg._read()
     require(head==reg.recovery.port.standard_bootstrap and not rows and previous is None,
             'STANDARD_REGISTRATION_EXISTING_STOP')
@@ -205,13 +230,18 @@ def prepare_handoff(reg, source_repo, domain, pins):
             len(mirror)==pins['mirror_files'] and sum(map(len,mirror.values()))==pins['mirror_bytes'],
             'STANDARD_MIRROR_PIN')
     prepared=prepare_registered_next(reg,source_repo,domain,mirror_record_sha256=pins['record_sha256'])
-    payload=_handoff_payload(prepared.binding,prepared.operation.before,prepared.operation.change)
+    accepted = reg.queue._accepted_view if reg.standard_chain else None
+    payload=_handoff_payload(prepared.binding,prepared.operation.before,prepared.operation.change,
+                             base=accepted.handoff_base if accepted is not None else None)
     pin=gb.StandardHandoffPin(prepared.binding.owner_request_sha256,pins['record_sha256'],
                               digest(payload),len(payload))
     return prepared, pin, payload
 
 
 def source_main(env):
+    from auto_intake import source_main as dynamic_source
+    if env.get("STANDARD_ROUTE") == "auto":
+        return dynamic_source(env)
     api=proof.GitHub(env['GH_TOKEN'])
     pins=parse(BOOTSTRAP.read_bytes())
     root=Path(env['RUNNER_TEMP'])
@@ -229,7 +259,7 @@ def source_main(env):
                   source,ref=SOURCE_REF)
     print('PROPOSED_ONLY registered=False rows=1')
 
-def verified_dispatch(api, env, path, source_run):
+def verified_dispatch(api, env, path, source_run, *, normal=False):
     require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_EVENT_NAME']=='workflow_dispatch' and
             env['GITHUB_REF']=='refs/heads/main' and env['GITHUB_RUN_ATTEMPT']=='1' and
             env['GITHUB_REPOSITORY']==PIN.name and env['GITHUB_REPOSITORY_ID']==str(PIN.numeric_id) and
@@ -244,17 +274,26 @@ def verified_dispatch(api, env, path, source_run):
              meta['path'].split('@',1)[0])==
             (run,workflow['id'],1,env['GITHUB_WORKFLOW_SHA'],'workflow_dispatch',
              PIN.numeric_id,'main',actor,path), 'STANDARD_DISPATCH_IDENTITY')
-    if path.endswith('e4f-standard-prepare.yml'):
+    if path.endswith('e4f-standard-prepare.yml') and not normal:
         rows,more=api.get(f"/actions/workflows/{workflow['id']}/runs?event=workflow_dispatch&per_page=100")
         matches=[r for r in rows['workflow_runs'] if r['display_title']==f'R18H prepare {source_run}']
         require(not more and len(matches)==1 and matches[0]['id']==run and
                 matches[0]['run_attempt']==1, 'STANDARD_DUPLICATE_WRITER')
 
 
+def lab_read_token():
+    # The existing job token authenticates only reads of its own public Lab.
+    # PRIVATE and DEV jobs never forward their token to another repository.
+    from e4f_github import CONTROL
+    return os.environ.get("GH_TOKEN") if (
+        os.environ.get("GITHUB_REPOSITORY")==CONTROL and
+        os.environ.get("AUTO_PHASE") in ("intake","assets","dev")) else None
+
+
 def public_release(tag):
     from e4f_github import CONTROL
     require(any(tag.startswith(prefix) and gb.sha(tag[len(prefix):]) for prefix in ('r18h-d2-','r18h-d3-','r18h-dev-')),'STANDARD_BACKUP_TAG')
-    status, release=github('/repos/'+CONTROL+'/releases/tags/'+tag)
+    status, release=github('/repos/'+CONTROL+'/releases/tags/'+tag,lab_read_token())
     require(status==200 and release['tag_name']==tag and release['draft'] is False and
             release['prerelease'] is False and release.get('immutable') is True,
             'STANDARD_BACKUP_RELEASE')
@@ -289,16 +328,16 @@ def public_asset(release, name, size, limit):
     return raw
 
 
-def public_baseline(lab, pins, *, extra=None):
+def public_baseline(lab, pins, *, extra=None, normal=False):
     """Read the public ledger and verified immutable backup objects into scratch."""
     from authority_coordinator import LocalWitness
     from e4f_github import CONTROL, CONTROL_ID, LEDGER
 
     prefix='/repos/'+CONTROL
-    status, repository=github(prefix)
+    status, repository=github(prefix,lab_read_token())
     require(status==200 and (repository['id'],repository['full_name'],repository['private'])==
             (CONTROL_ID,CONTROL,False),'STANDARD_LEDGER_REPOSITORY')
-    status,row=github(prefix+'/git/ref/'+LEDGER.removeprefix('refs/'))
+    status,row=github(prefix+'/git/ref/'+LEDGER.removeprefix('refs/'),lab_read_token())
     require(status==200 and row['ref']==LEDGER and row['object']['type']=='commit' and
             gb.oid(row['object']['sha']),'STANDARD_LEDGER_HEAD')
     tip=row['object']['sha']
@@ -314,7 +353,7 @@ def public_baseline(lab, pins, *, extra=None):
     require(result.returncode==0 and value(anchor,'rev-parse',MAIN)==tip,'STANDARD_LEDGER_FETCH')
     history=value(anchor,'rev-list','--reverse',MAIN).splitlines()
     c3 = pins.get('c3')
-    require(1<=len(history)<=(4 if c3 else 3) and history[0]==pins['ledger'],'STANDARD_LEDGER_HISTORY')
+    require(1<=len(history)<=(256 if normal else (4 if c3 else 3)) and history[0]==pins['ledger'],'STANDARD_LEDGER_HISTORY')
     files_=files(anchor,tip,('records/',))
     paths=[f'records/{i:08d}.json' for i in range(len(history))]
     require(set(files_)==set(paths),'STANDARD_LEDGER_HISTORY')
@@ -345,7 +384,7 @@ def public_baseline(lab, pins, *, extra=None):
         require(digest(raw)==identity,'STANDARD_BACKUP_READBACK')
         with (directory/backup['file']).open('xb') as f:
             f.write(raw)
-    status,readback=github(prefix+'/git/ref/'+LEDGER.removeprefix('refs/'))
+    status,readback=github(prefix+'/git/ref/'+LEDGER.removeprefix('refs/'),lab_read_token())
     require(status==200 and readback==row,'STANDARD_LEDGER_MOVED')
     return LocalWitness(lab,anchor,directory,pins['record_sha256'],pins['library_id'],pins['witness'])
 
@@ -368,7 +407,7 @@ def control_run(control_run, allowed_titles=None):
     return row
 
 
-def proposal(record_sha, *, c3=False):
+def proposal(record_sha, *, c3=False, normal=False):
     require(gb.sha(record_sha),'STANDARD_PROPOSAL_PIN')
     tag='r18h-d3-'+record_sha
     release=public_release(tag)
@@ -379,7 +418,7 @@ def proposal(record_sha, *, c3=False):
     obj=parse(raw)
     require(data(obj)==raw and set(obj)=={'schema','source_run','ledger_parent','previous','record','handoff'}
             and obj['schema']==1 and gb.positive(obj['source_run']) and gb.oid(obj['ledger_parent']) and
-            digest(data(obj['record']))==record_sha and obj['record']['index'] in ((3,) if c3 else (1,2)),
+            digest(data(obj['record']))==record_sha and (type(obj['record']['index']) is int and obj['record']['index']>=3 if normal else obj['record']['index'] in ((3,) if c3 else (1,2))),
             'STANDARD_PROPOSAL')
     from e4f_github import ledger_cas_payload
     ledger_cas_payload(obj['ledger_parent'],obj['previous'],obj['record'])
@@ -394,6 +433,10 @@ def c3_control_run(run, pins):
 
 
 def guard_main(env):
+    params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
+    from auto_intake import is_auto_control, private_guard
+    if is_auto_control(int(params["control_run"])):
+        return private_guard(env)
     import standard_guard
     from authority_coordinator import LocalAppendGuard
     api=proof.GitHub(env['GH_TOKEN'])
@@ -546,6 +589,10 @@ def produce_candidate(domain, operation, context, witness, run, handoff, out):
 
 
 def prepare_main(env):
+    params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
+    if params.get("route") == "auto":
+        from auto_intake import private_prepare
+        return private_prepare(env)
     api=proof.GitHub(env['GH_TOKEN'])
     params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
     run=int(params['source_run'])
@@ -555,6 +602,8 @@ def prepare_main(env):
     lab=Lab.create(root/'r18h-prepare')
     pins=parse(BOOTSTRAP.read_bytes())
     c3=pins.get('c3')
+    require(params.get("route","")=="","STANDARD_DISPATCH_ROUTE")
+    params.pop("route",None)
     if c3:
         require(set(params)=={'source_run','control_run'} and params['control_run'].isdigit(),'C3_PREPARE_SCOPE')
         c3_control_run(int(params['control_run']),pins)

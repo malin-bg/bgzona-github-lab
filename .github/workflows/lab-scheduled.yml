@@ -1,0 +1,45 @@
+{
+  "name": "BGZONA Lab scheduled wake",
+  "on": {
+    "schedule": [
+      {
+        "cron": "2-59/5 * * * *"
+      }
+    ]
+  },
+  "permissions": {},
+  "concurrency": {
+    "group": "bgzona-scheduled-wake",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "wake": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/main' && github.event_name == 'schedule' && github.run_attempt == 1",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 2,
+      "permissions": {
+        "contents": "read",
+        "actions": "write"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Wake protected Lab route",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "BGZONA_ACTIVITY_COMMIT_GO": "false"
+          },
+          "run": "set -euo pipefail\npython3 -I -B tools/cp2b/c5c/lab_schedule.py"
+        }
+      ]
+    }
+  }
+}
