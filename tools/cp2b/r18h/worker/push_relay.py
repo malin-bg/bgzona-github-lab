@@ -76,8 +76,9 @@ def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time
     need(type(relay_run) is int and relay_run > 0 and proof.oid(main_commit), "RELAY_PIN")
     workflow, _ = get(api, "/actions/workflows/" + PATH.rsplit("/", 1)[1])
     if completed_recovery:
-        need(not running and (source_run, relay_run, main_commit, workflow["id"]) ==
+        need(not running and (source_run, relay_run, main_commit, workflow["id"]) in (
              (CATCHUP_RUN, 42471208063, "7c15826ee3fd93dd327ae321970afe139ad71ffd", 411050691),
+             (42525151296, 42528043016, "6dcd8139e7b603531ede09128dba8fd3637e0a1a", 411050691)),
              "RELAY_RECOVERY_SCOPE")
     need(workflow["path"] == PATH and
          workflow["state"] == ("disabled_manually" if completed_recovery else "active") and

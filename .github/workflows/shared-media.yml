@@ -1,6 +1,6 @@
 {
   "name": "R18H controlled independent D3 and DEV",
-  "run-name": "${{ inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256))) }}",
+  "run-name": "${{ inputs.mode == 'f1-resume' && format('BGZONA f1-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256)))) }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -18,7 +18,8 @@
             "dev-pin",
             "c3",
             "auto",
-            "auto-resume"
+            "auto-resume",
+            "f1-resume"
           ],
           "required": true
         },
@@ -421,7 +422,7 @@
       "environment": "r18h-control"
     },
     "auto-intake": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == ''))",
+      "if": "(github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == ''))) || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 24,
       "environment": "r18h-control",
@@ -456,7 +457,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.app.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "6dcd8139e7b603531ede09128dba8fd3637e0a1a",
+            "PRIVATE_WORKFLOW_COMMIT": "f8fdb186a2e31d5cd564b59ba6322dad1e26f542",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake"
           },
@@ -470,7 +471,7 @@
       }
     },
     "auto-assets": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == '')) && needs.auto-intake.outputs.work == 'true'",
+      "if": "(github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == '')) && needs.auto-intake.outputs.work == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && needs.auto-intake.outputs.work == 'true')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "environment": "r18h-assets",
@@ -515,7 +516,7 @@
       ]
     },
     "auto-dev": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == '')) && needs.auto-intake.outputs.work == 'true'",
+      "if": "(github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && inputs.source_run == '42374329727' && inputs.relay_run == '42471208063' && inputs.private_run == '' && inputs.record_sha256 == '')) && needs.auto-intake.outputs.work == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && needs.auto-intake.outputs.work == 'true')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 24,
       "permissions": {

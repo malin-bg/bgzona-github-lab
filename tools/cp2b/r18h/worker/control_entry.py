@@ -641,7 +641,7 @@ def c3_main(env):
 
 def main(env):
     inputs=parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes()).get("inputs",{})
-    if inputs.get("mode") in ("auto", "auto-resume"):
+    if inputs.get("mode") in ("auto", "auto-resume", "f1-resume"):
         from auto_intake import main as auto_main
         return auto_main(env)
     params=context(env)

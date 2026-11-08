@@ -42,6 +42,106 @@ RECOVERY_INITIAL = {
 }
 
 
+# Exactly one recovery of the already prepared F1 candidate, never a new prepare.
+F1_PREFIX = "BGZONA f1-resume "
+F1_TITLE = F1_PREFIX + "42525151296:42528043016"
+F1_RECORD = "7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625"
+F1_PROPOSAL = "62e1dc6ba72e5e50e26613dbf84d19d9732a014f8f94ea5533defc09c57f0360"
+F1_PREPARE_YAML = "986432581166d23cca762af816a41a9440adf05d6ca95534fe48d4742161a30c"
+F1_ORIGIN_MAIN = "6dcd8139e7b603531ede09128dba8fd3637e0a1a"
+F1_FAILED_LAB = 42528066889
+F1_FAILED_GUARD = 42528340713
+F1_NUMBER = 17
+
+
+def f1_failed(api=None):
+    failed = public(f"/actions/runs/{F1_FAILED_LAB}/attempts/1")
+    require((failed["id"],failed["workflow_id"],failed["run_number"],failed["run_attempt"],
+             failed["event"],failed["repository"]["id"],failed["actor"]["id"],failed["head_branch"],
+             failed["head_sha"],failed["display_title"],failed["status"],failed["conclusion"]) ==
+            (F1_FAILED_LAB,CONTROL_WORKFLOW,16,1,"workflow_dispatch",CONTROL_ID,DISPATCH_ACTOR,
+             "automation-control","8970217fab6aa70ca548e9498ccdddbcd67e01d4",
+             "BGZONA auto 42525151296:42528043016","completed","failure"),"F1_FAILED_LAB")
+    listing=public(f"/actions/runs/{F1_FAILED_LAB}/attempts/1/jobs?per_page=100")
+    jobs=listing["jobs"]
+    require(listing["total_count"]==len(jobs)==12 and len({j["name"] for j in jobs})==12 and
+            all(j["conclusion"]==("failure" if j["name"]=="auto-intake" else "skipped")
+                and j["status"]=="completed" for j in jobs) and
+            next(j for j in jobs if j["name"]=="auto-intake")["id"]==128875981674,
+            "F1_FAILED_LAB_JOBS")
+    if api is not None:
+        row,_=api.get(f"/actions/runs/{F1_FAILED_GUARD}/attempts/1")
+        require((row["id"],row["workflow_id"],row["run_attempt"],row["event"],
+                 row["repository"]["id"],row["actor"]["id"],row["head_branch"],row["head_sha"],
+                 row["display_title"],row["status"],row["conclusion"]) ==
+                (F1_FAILED_GUARD,408733315,1,"workflow_dispatch",standard.PIN.numeric_id,353092585,
+                 "main",F1_ORIGIN_MAIN,
+                 "E4F D3 guard d7f1e827227c0259f46949d2203b8123d59857b5bbe9612abbd1ecf108efa943",
+                 "completed","failure"),"F1_FAILED_GUARD")
+        jobs,more=api.get(f"/actions/runs/{F1_FAILED_GUARD}/attempts/1/jobs?per_page=100")
+        require(not more and jobs["total_count"]==len(jobs["jobs"])==1 and
+                jobs["jobs"][0]["id"]==128876805874 and jobs["jobs"][0]["conclusion"]=="failure",
+                "F1_FAILED_GUARD_JOB")
+
+
+def f1_prepared(api, *, item=None):
+    """Authenticate the successful original prepare and permanent immutable proposal."""
+    import base64
+    from hashlib import sha1
+    row,_=api.get("/actions/runs/42528096060/attempts/1")
+    require((row["id"],row["workflow_id"],row["run_attempt"],row["event"],row["repository"]["id"],
+             row["actor"]["id"],row["head_branch"],row["head_sha"],row["display_title"],
+             row["status"],row["conclusion"]) ==
+            (42528096060,408733317,1,"workflow_dispatch",standard.PIN.numeric_id,353092585,"main",
+             F1_ORIGIN_MAIN,"R18H prepare 42525151296","completed","success"),"F1_PREPARE_RUN")
+    jobs,more=api.get("/actions/runs/42528096060/attempts/1/jobs?per_page=100")
+    require(not more and jobs["total_count"]==len(jobs["jobs"])==1 and
+            (jobs["jobs"][0]["name"],jobs["jobs"][0]["conclusion"])==("prepare","success"),
+            "F1_PREPARE_JOB")
+    path=".github/workflows/e4f-standard-prepare.yml"
+    obj,_=api.get("/contents/"+path+"?ref="+F1_ORIGIN_MAIN)
+    require(obj["encoding"]=="base64" and obj["path"]==path,"F1_PREPARE_WORKFLOW")
+    raw=base64.b64decode("".join(obj["content"].splitlines()),validate=True)
+    require(len(raw)==obj["size"] and sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()==obj["sha"] and
+            digest(raw)==F1_PREPARE_YAML,"F1_PREPARE_WORKFLOW")
+    # No Actions candidate download, expired-flag override or cached artifact authority.
+    release=standard.public_release("r18h-d3-"+F1_RECORD)
+    require(release["id"]==438553152,"F1_RELEASE_ID")
+    if item is None:
+        item=standard.proposal(F1_RECORD,normal=True)
+    require(digest(data(item))==F1_PROPOSAL and digest(data(item["record"]))==F1_RECORD and
+            item["source_run"]==42525151296 and item["record"]["phase"]=="staged" and
+            item["ledger_parent"]=="106c5e16252162fc841874758808a79177b10f72" and
+            item["handoff"]==dict(head="93e65b45807a992b8230592b0ea9cbbc2fb1f130",
+                parent="53a02c5f4054bd2b7310be140e5092a43983de6d",
+                request="f7938c9d84bf808e26ed96c9e16a064ca0901f765af28739139b6050d288b5c3",
+                mirror="7ada5243bac2039efaf1f834596d0f0785f50b8e4edf50253f8e35dbaabab9ab",
+                sha256="bdd07554e5f6e1c2e0c539db9a4c7e75f2af79e8ec3d619547a51ee439c76765",size=63748),
+            "F1_PREPARED_CANDIDATE")
+    return item
+
+
+def f1_initial(api, private_main):
+    for ref,expected in (("heads/main",private_main),
+        ("heads/cp2b-private-standard-source-r1","4aa95e9a84bc3fde909ccc111da156d8844ff263"),
+        ("heads/cp2b-private-standard-recovery-c2","93e65b45807a992b8230592b0ea9cbbc2fb1f130")):
+        row,_=api.get("/git/ref/"+ref)
+        require(row["ref"]=="refs/"+ref and row["object"]["type"]=="commit" and
+                row["object"]["sha"]==expected,"F1_INITIAL_PRIVATE_STATE")
+    history,more=api.get("/actions/runs?per_page=100")
+    require(not more and history["total_count"]==len(history["workflow_runs"])==33 and
+            all(r["status"]=="completed" for r in history["workflow_runs"]),"F1_INITIAL_PRIVATE_HISTORY")
+    for repo,ref,expected in (
+        (CONTROL,"heads/automation-ledger","106c5e16252162fc841874758808a79177b10f72"),
+        (ASSETS,"heads/main","fc48d532693af1cef349211dbb951c65be7554bf"),
+        (ASSETS,"bgzona/witness","b22c7f0ddc4cb41e38473a429fc54b820f70abb1"),
+        (ASSETS,"heads/r18h-staging-authority","fc48d532693af1cef349211dbb951c65be7554bf"),
+        (ASSETS,"heads/r18h-staging-witness","b22c7f0ddc4cb41e38473a429fc54b820f70abb1"),
+        ("malin-bg/bgzona-win-dev","heads/main","3bbc6e1320858ee7ca81370971bc6ff046ac3680")):
+        status,row=github("/repos/"+repo+"/git/ref/"+ref,standard.lab_read_token() if repo==CONTROL else None)
+        require(status==200 and row["ref"]=="refs/"+ref and row["object"]["type"]=="commit" and
+                row["object"]["sha"]==expected,"F1_INITIAL_PUBLIC_STATE")
+
 def recovery_failed():
     """Match the independently reviewed immutable pre-CAS failure."""
     old = public(f"/actions/runs/{RECOVERY_FAILED}/attempts/1")
@@ -109,7 +209,7 @@ def public(path):
 def is_auto_control(run):
     require(gb.positive(run), "AUTO_CONTROL_ID")
     row = public(f"/actions/runs/{run}/attempts/1")
-    return row.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume "))
+    return row.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX))
 
 def control_run(run, source=None, relay=None, *, private_api=None, private_main=None):
     row = public(f"/actions/runs/{run}/attempts/1")
@@ -122,21 +222,26 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
              ref["object"]["sha"], "in_progress"), "AUTO_CONTROL_IDENTITY")
     title = row["display_title"]
     recovering = title.startswith("BGZONA auto-resume ")
-    require(title.startswith("BGZONA auto ") or recovering, "AUTO_RELAY_LINK")
+    f1 = title.startswith(F1_PREFIX)
+    require(title.startswith("BGZONA auto ") or recovering or f1, "AUTO_RELAY_LINK")
+    if f1:
+        require(title==F1_TITLE and row["run_number"]==F1_NUMBER and
+                row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"F1_CONTROL_SCOPE")
+        f1_failed(private_api)
     if recovering:
         require(title == RECOVERY_TITLE and row["run_number"] == RECOVERY_NUMBER and
                 row.get("triggering_actor", row["actor"])["id"] == DISPATCH_ACTOR,
                 "AUTO_RECOVERY_SCOPE")
         recovery_failed()
-    parts = title[len("BGZONA auto-resume ") if recovering else 12:].split(":")
+    parts = title[len(F1_PREFIX) if f1 else (len("BGZONA auto-resume ") if recovering else 12):].split(":")
     require(len(parts) == 2, "AUTO_RELAY_LINK")
     linked_source, linked_relay = (push_relay.number(v) for v in parts)
     require((source is None or source == linked_source) and
             (relay is None or relay == linked_relay), "AUTO_RELAY_LINK")
     if private_api is not None:
         verified = push_relay.verify(private_api, linked_source, linked_relay,
-                                     RECOVERY_RELAY_MAIN if recovering else private_main,
-                                     completed_recovery=recovering)
+                                     F1_ORIGIN_MAIN if f1 else (RECOVERY_RELAY_MAIN if recovering else private_main),
+                                     completed_recovery=(recovering or f1))
         row = row | {"source_sha": verified["head_sha"]}
     else:
         # Assets/DEV inherit the same immutable workflow and accepted D3 proof.
@@ -153,8 +258,15 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
-                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ")) and
-                not (recovering and r["id"] == RECOVERY_FAILED)]
+                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
+                not (recovering and r["id"] == RECOVERY_FAILED) and
+                not (f1 and r["id"] == F1_FAILED_LAB)]
+    if f1:
+        failed=[r for r in history["workflow_runs"] if r["id"]==F1_FAILED_LAB]
+        require(history["total_count"]==len(history["workflow_runs"])==F1_NUMBER and
+                len(failed)==1 and failed[0]["conclusion"]=="failure" and failed[0]["run_attempt"]==1 and
+                all(r["id"]==run or r["run_number"]<F1_NUMBER for r in history["workflow_runs"]),
+                "F1_CONTROL_HISTORY")
     if recovering:
         failed = [r for r in history["workflow_runs"] if r["id"] == RECOVERY_FAILED]
         require(history["total_count"] == len(history["workflow_runs"]) == RECOVERY_NUMBER and
@@ -183,12 +295,16 @@ def context(env):
             env["GITHUB_ACTOR_ID"]==str(DISPATCH_ACTOR) and env["GITHUB_RUN_ATTEMPT"]=="1" and
             env["GITHUB_EVENT_NAME"]=="workflow_dispatch" and
             env["GITHUB_WORKFLOW_REF"]==CONTROL+"/.github/workflows/shared-media.yml@"+CONTROL_REF and
-            gb.oid(env["GITHUB_WORKFLOW_SHA"]) and params.get("mode") in ("auto", "auto-resume") and
+            gb.oid(env["GITHUB_WORKFLOW_SHA"]) and params.get("mode") in ("auto", "auto-resume", "f1-resume") and
             set(params)<={"mode","relay_run","source_run","private_run","record_sha256"} and
-            all(params.get(k,"")=="" for k in ("private_run","record_sha256")),
+            (params.get("mode")=="f1-resume" and params.get("private_run")=="42528096060" and
+             params.get("record_sha256")==F1_RECORD or
+             params.get("mode")!="f1-resume" and all(params.get(k,"")=="" for k in ("private_run","record_sha256"))),
             "AUTO_CONTEXT")
     source, relay = push_relay.number(params.get("source_run","")), push_relay.number(params.get("relay_run",""))
     recovering = params["mode"] == "auto-resume"
+    f1 = params["mode"]=="f1-resume"
+    require(not f1 or (source,relay)==(42525151296,42528043016),"F1_CONTROL_INPUT")
     require(not recovering or (source, relay) == (push_relay.CATCHUP_RUN, RECOVERY_RELAY),
             "AUTO_RECOVERY_SCOPE")
     phase = env["AUTO_PHASE"]
@@ -198,7 +314,10 @@ def context(env):
     row=control_run(int(env["GITHUB_RUN_ID"]), source, relay, private_api=api,
                     private_main=env.get("PRIVATE_WORKFLOW_COMMIT"))
     require(row["head_sha"]==env["GITHUB_WORKFLOW_SHA"] and
-            row["display_title"].startswith("BGZONA auto-resume ") == recovering, "AUTO_WORKER_PIN")
+            row["display_title"].startswith("BGZONA auto-resume ") == recovering and
+            row["display_title"].startswith(F1_PREFIX)==f1, "AUTO_WORKER_PIN")
+    if f1 and phase=="intake":
+        f1_initial(api,env["PRIVATE_WORKFLOW_COMMIT"])
     if recovering and phase == "intake":
         recovery_initial(api, env["PRIVATE_WORKFLOW_COMMIT"])
     return params | ({"source_sha":row["source_sha"]} if phase == "intake" else {})
@@ -580,6 +699,20 @@ def main(env):
     params=context(env)
     phase=env["AUTO_PHASE"]
     pins=parse(standard.BOOTSTRAP.read_bytes())
+    if phase=="intake" and params["mode"]=="f1-resume":
+        api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
+        item=f1_prepared(api)
+        ledger=GitHubLedgerAppend(env["GH_TOKEN"],control.attach_guard(env,c3=True))
+        status,commit=ledger.append(item["ledger_parent"],item["previous"],item["record"])
+        require(status in ("APPENDED","OBSERVED") and gb.oid(commit),"AUTO_D3_READBACK")
+        verified=standard.public_baseline(Lab.create(Path(env["RUNNER_TEMP"])/"f1-accepted"),pins,normal=True).read()
+        require(verified["latest"]==item["record"],"AUTO_ACCEPTANCE_MOVED")
+        bound=binding(verified["recovered"],item["record"]["primary_main"])
+        require(bound is not None and bound["final"] and bound["phase"]=="staged","AUTO_FINAL_REQUIRED")
+        with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f:
+            f.write("record="+F1_RECORD+"\nwork=true\n")
+        print("F1_PREPARED_D3_FINAL_VERIFIED",commit,F1_RECORD)
+        return
     if phase=="intake":
         api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
         if fast_idle(api,pins):

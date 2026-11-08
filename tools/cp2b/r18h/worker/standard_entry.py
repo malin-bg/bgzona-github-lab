@@ -285,18 +285,44 @@ def lab_read_token():
     # The existing job token authenticates only reads of its own public Lab.
     # PRIVATE and DEV jobs never forward their token to another repository.
     from e4f_github import CONTROL
-    return os.environ.get("GH_TOKEN") if (
-        os.environ.get("GITHUB_REPOSITORY")==CONTROL and
-        os.environ.get("AUTO_PHASE") in ("intake","assets","dev")) else None
+    if (os.environ.get("GITHUB_REPOSITORY")==CONTROL and
+            os.environ.get("AUTO_PHASE") in ("intake","assets","dev")):
+        return os.environ.get("GH_TOKEN")
+    if os.environ.get("GITHUB_REPOSITORY")==PIN.name:
+        # Existing ephemeral job token, only to api.github.com GETs of the fixed public Lab.
+        # No credential is sent by public_asset() to browser/redirect download hosts.
+        paths=(".github/workflows/e4f-standard-prepare.yml",
+               ".github/workflows/e4f-d3-guard.yml",".github/workflows/e4f-d3-guard-observe.yml")
+        token=os.environ.get("GH_TOKEN")
+        require(os.environ.get("GITHUB_ACTIONS")=="true" and
+                os.environ.get("GITHUB_SERVER_URL")=="https://github.com" and
+                os.environ.get("GITHUB_REPOSITORY_ID")==str(PIN.numeric_id) and
+                os.environ.get("GITHUB_REF")=="refs/heads/main" and
+                os.environ.get("GITHUB_EVENT_NAME")=="workflow_dispatch" and
+                os.environ.get("GITHUB_RUN_ATTEMPT")=="1" and
+                os.environ.get("GITHUB_ACTOR_ID")=="353092585" and
+                os.environ.get("GITHUB_WORKFLOW_REF") in
+                  tuple(PIN.name+"/"+p+"@refs/heads/main" for p in paths) and
+                gb.oid(os.environ.get("GITHUB_WORKFLOW_SHA")) and
+                type(token) is str and bool(token) and not any(c.isspace() for c in token),
+                "STANDARD_LAB_READ_CONTEXT")
+        return token
+    return None
 
 
 def public_release(tag):
     from e4f_github import CONTROL
     require(any(tag.startswith(prefix) and gb.sha(tag[len(prefix):]) for prefix in ('r18h-d2-','r18h-d3-','r18h-dev-')),'STANDARD_BACKUP_TAG')
     status, release=github('/repos/'+CONTROL+'/releases/tags/'+tag,lab_read_token())
-    require(status==200 and release['tag_name']==tag and release['draft'] is False and
-            release['prerelease'] is False and release.get('immutable') is True,
-            'STANDARD_BACKUP_RELEASE')
+    obj=release if type(release) is dict else {}
+    checks=dict(http_200=status==200,object=type(release) is dict,
+                tag_matches=obj.get('tag_name')==tag,draft_false=obj.get('draft') is False,
+                prerelease_false=obj.get('prerelease') is False,immutable=obj.get('immutable') is True)
+    valid=all(checks.values())
+    if not valid:
+        print(json.dumps(dict(release_tag=tag,http_status=status,metadata_checks=checks),
+                         sort_keys=True),flush=True)
+    require(valid,'STANDARD_BACKUP_RELEASE')
     return release
 
 
