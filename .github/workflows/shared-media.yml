@@ -17,7 +17,8 @@
             "project",
             "dev-pin",
             "c3",
-            "auto"
+            "auto",
+            "backup-probe"
           ],
           "required": true
         },
@@ -559,6 +560,19 @@
         "auto-assets"
       ],
       "environment": "r18h-control"
+    },
+    "backup-http-probe": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'backup-probe'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 4,
+      "permissions": {},
+      "steps": [
+        {
+          "name": "Read-only HTTP observations",
+          "shell": "bash",
+          "run": "set -euo pipefail\n/usr/bin/python3 -I -B - <<'PY'\nfrom urllib.request import HTTPRedirectHandler, Request, build_opener\nfrom urllib.error import HTTPError\nfrom urllib.parse import urlsplit\nimport json,sys,platform\nclass NoRedirect(HTTPRedirectHandler):\n    def redirect_request(self, *args, **kwargs):\n        return None\ndef observe(asset, opener=None):\n    result = dict(release_tag=asset[\"tag\"], asset_id=asset[\"id\"], http_status=None,\n                  redirect_scheme=\"\", redirect_hostname=\"\", failed_check=\"\")\n    url = \"https://github.com/malin-bg/bgzona-github-lab/releases/download/\" + asset[\"tag\"] + \"/\" + asset[\"name\"]\n    try:\n        response = (opener or build_opener(NoRedirect)).open(Request(url), timeout=30)\n        with response:\n            result[\"http_status\"] = response.status\n        result[\"failed_check\"] = \"NONE_RESPONSE_HEADERS_ONLY\"\n        return result\n    except HTTPError as error:\n        result[\"http_status\"] = error.code\n        try:\n            parsed = urlsplit(error.headers.get(\"Location\", \"\"))\n            result[\"redirect_scheme\"] = parsed.scheme\n            result[\"redirect_hostname\"] = parsed.hostname or \"\"\n        except ValueError:\n            result[\"failed_check\"] = \"STANDARD_BACKUP_REDIRECT:PARSE\"\n            return result\n        if error.code not in (301,302,303,307,308):\n            result[\"failed_check\"] = \"STANDARD_BACKUP_REDIRECT:HTTP_STATUS\"\n        elif parsed.scheme != \"https\":\n            result[\"failed_check\"] = \"STANDARD_BACKUP_REDIRECT:HTTPS\"\n        elif parsed.netloc not in (\"release-assets.githubusercontent.com\",\"objects.githubusercontent.com\"):\n            result[\"failed_check\"] = \"STANDARD_BACKUP_REDIRECT:HOST_AUTHORITY\"\n        else:\n            result[\"failed_check\"] = \"NONE_REDIRECT_CHECK\"\n        return result\n    except Exception as error:\n        result[\"failed_check\"] = \"NO_HTTP_RESPONSE:\" + type(error).__name__\n        return result\ndef main():\n    assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"\n    assets = [{'tag': 'r18h-d3-1db2dc465abe8db735d223ed976b24e51921e1a3968004f0eb8be7db5b3fabfe', 'id': 718914548, 'name': 'proposal.json', 'size': 1994}, {'tag': 'r18h-d2-7298080b30620c395628bd7f095f2b5ac99020ba76457c6cee3c32b2b6952bc0', 'id': 715123437, 'name': '7298080b30620c395628bd7f095f2b5ac99020ba76457c6cee3c32b2b6952bc0.bundle', 'size': 12288126}, {'tag': 'r18h-d3-4856e887ca71096a7f533c5e42e11dfe09a19e58059045903964d737455fdf2d', 'id': 717389518, 'name': '87bd49bcc98e227bd8c649e9fa54da09efc3187fcc6f0baaa9a911345a7172d2.bundle', 'size': 21893}, {'tag': 'r18h-d3-728b0a8a3ec296b6060c15b809eb56fff7f48cffd23d60be691ee21bbe8eebf9', 'id': 717520560, 'name': '406d9d555288ac1ef9ae9d086411df7e2bb2e8cc324849543cf9663850d83a08.bundle', 'size': 9960}, {'tag': 'r18h-d3-1db2dc465abe8db735d223ed976b24e51921e1a3968004f0eb8be7db5b3fabfe', 'id': 718914513, 'name': '89836658d61804a35a926418b5b4c5244f4253813a1665dab15582b3ce8a5822.bundle', 'size': 12306172}]\n    for asset in assets:\n        print(json.dumps(observe(asset),sort_keys=True,separators=(\",\",\":\")),flush=True)\nif __name__ == \"__main__\":\n    main()\n\nPY\n"
+        }
+      ]
     }
   }
 }
