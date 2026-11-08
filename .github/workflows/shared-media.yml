@@ -456,7 +456,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.app.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "c655c3fea57da43393cc246e8fe9d6fc4e8d14d8",
+            "PRIVATE_WORKFLOW_COMMIT": "6dcd8139e7b603531ede09128dba8fd3637e0a1a",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake"
           },

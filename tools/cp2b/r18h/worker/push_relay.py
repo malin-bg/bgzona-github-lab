@@ -19,6 +19,9 @@ CATCHUP_RUN = 42374329727
 CATCHUP_SOURCE = "d398cf61b16d5e80ffe1212580249cedd1a3edae"
 CATCHUP_ARTIFACT = 13574868148
 CATCHUP_DIGEST = "sha256:913a07cd569698f6ebd2e0aa9424e328b57777cd5a3f85fb9e4c7cdfe3bc8636"
+# One pending F1 proof. This does not turn a manual catch-up into workflow_run evidence.
+F1_CATCHUP = (42525151296, "4aa95e9a84bc3fde909ccc111da156d8844ff263", 13635261606,
+              "sha256:e39d39a3c14193ff8ec6193a9324c61a0e32a92583f5359bce783b442bbdcc6e")
 
 class Stop(RuntimeError):
     pass
@@ -97,8 +100,10 @@ def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time
          (running or row["conclusion"] == "success"), "RELAY_RESULT")
     source, item = source_evidence(api, source_run)
     if row["event"] == "workflow_dispatch":
+        expected = (F1_CATCHUP if source_run == F1_CATCHUP[0] else
+                    (CATCHUP_RUN, CATCHUP_SOURCE, CATCHUP_ARTIFACT, CATCHUP_DIGEST))
         need((source_run, source["head_sha"], item["id"], item["digest"]) ==
-             (CATCHUP_RUN, CATCHUP_SOURCE, CATCHUP_ARTIFACT, CATCHUP_DIGEST), "RELAY_CATCHUP_SCOPE")
+             expected, "RELAY_CATCHUP_SCOPE")
     # Do not let unrelated old runs eventually fill the replay-check window.
     created = quote(">=" + source["created_at"], safe="")
     history, more = get(api, f"/actions/workflows/{workflow['id']}/runs?created={created}&per_page=100")
@@ -148,7 +153,7 @@ def main(env):
     elif env["GITHUB_EVENT_NAME"] == "workflow_dispatch":
         need(set(event["inputs"]) == {"source_run"}, "RELAY_CATCHUP_INPUT")
         source_run = number(event["inputs"]["source_run"])
-        need(source_run == CATCHUP_RUN, "RELAY_CATCHUP_SCOPE")
+        need(source_run in (CATCHUP_RUN, F1_CATCHUP[0]), "RELAY_CATCHUP_SCOPE")
     else:
         raise Stop("RELAY_TRIGGER")
     relay_run = number(env["GITHUB_RUN_ID"])
