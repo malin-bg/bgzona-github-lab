@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 import json
 import os
+import push_relay
 
 import github_backend as gb
 import push_artifact as artifact
@@ -17,10 +18,9 @@ from private_queue import PrivateQueue, TrustedRegistration, request_identity
 from registration_entry import read_archive
 import standard_entry as standard
 
-BOT = 41898282
+DISPATCH_ACTOR = gb.CP2B_OWNER_ID
 CONTROL_WORKFLOW = 408732936
 CONTROL_REF = "refs/heads/automation-control"
-SCHEDULE_PATH = ".github/workflows/lab-scheduled.yml"
 SOURCE_BASELINE = "8bdf183c8863c4329faa907391a58dd14d36a64d"
 HISTORICAL_CODE = "3ae07545f5f8b980f4494333e3924e7f2f17321f"
 HISTORICAL_SOURCE = "e34e70806a01c38bc826af00a40cddebf87891c0"
@@ -36,48 +36,46 @@ def is_auto_control(run):
     row = public(f"/actions/runs/{run}/attempts/1")
     return row.get("display_title", "").startswith("BGZONA auto ")
 
-def control_run(run, schedule=None):
+def control_run(run, source=None, relay=None, *, private_api=None, private_main=None):
     row = public(f"/actions/runs/{run}/attempts/1")
     ref = public("/git/ref/heads/automation-control")
     require((row["id"], row["workflow_id"], row["run_attempt"], row["event"],
              row["repository"]["id"], row["actor"]["id"], row["head_branch"],
              row["path"].split("@",1)[0], row["head_sha"], row["status"]) ==
-            (run, CONTROL_WORKFLOW, 1, "workflow_dispatch", CONTROL_ID, BOT,
+            (run, CONTROL_WORKFLOW, 1, "workflow_dispatch", CONTROL_ID, DISPATCH_ACTOR,
              "automation-control", ".github/workflows/shared-media.yml",
              ref["object"]["sha"], "in_progress"), "AUTO_CONTROL_IDENTITY")
     title = row["display_title"]
-    require(title.startswith("BGZONA auto ") and title[12:].isdigit(), "AUTO_SCHEDULE_LINK")
-    linked = int(title[12:])
-    require(schedule is None or schedule == linked, "AUTO_SCHEDULE_LINK")
-    import time
-    for remaining in range(16):
-        tick=public(f"/actions/runs/{linked}/attempts/1")
-        require(tick["id"]==linked,"AUTO_SCHEDULE_IDENTITY")
-        if tick["status"]=="completed": break
-        require(remaining<15 and tick["status"] in ("queued","in_progress","waiting","pending"),
-                "AUTO_SCHEDULE_UNRESOLVED")
-        time.sleep(2)
-    require((tick["id"], tick["run_attempt"], tick["repository"]["id"], tick["event"],
-             tick["head_branch"], tick["path"].split("@",1)[0]) ==
-            (linked, 1, CONTROL_ID, "schedule", "main", SCHEDULE_PATH) and
-            gb.oid(tick["head_sha"]) and tick["status"] == "completed" and
-            tick["conclusion"] == "success", "AUTO_SCHEDULE_IDENTITY")
-    from base64 import b64decode
-    from hashlib import sha1
-    for path,expected in SCHEDULER_PINS.items():
-        obj=public("/contents/"+path+"?ref="+tick["head_sha"])
-        require(obj["type"]=="file" and obj["path"]==path and obj["encoding"]=="base64",
-                "AUTO_SCHEDULE_CODE")
-        raw=b64decode("".join(obj["content"].splitlines()),validate=True)
-        require(len(raw)==obj["size"] and digest(raw)==expected and
-                sha1(f"blob {len(raw)}\0".encode()+raw).hexdigest()==obj["sha"],
-                "AUTO_SCHEDULE_CODE")
+    require(title.startswith("BGZONA auto "), "AUTO_RELAY_LINK")
+    parts = title[12:].split(":")
+    require(len(parts) == 2, "AUTO_RELAY_LINK")
+    linked_source, linked_relay = (push_relay.number(v) for v in parts)
+    require((source is None or source == linked_source) and
+            (relay is None or relay == linked_relay), "AUTO_RELAY_LINK")
+    if private_api is not None:
+        verified = push_relay.verify(private_api, linked_source, linked_relay, private_main)
+        row = row | {"source_sha": verified["head_sha"]}
+    else:
+        # Assets/DEV inherit the same immutable workflow and accepted D3 proof.
+        # No additional PRIVATE credential is exposed to either job.
+        jobs = public(f"/actions/runs/{run}/attempts/1/jobs?per_page=100")["jobs"]
+        intake = [j for j in jobs if j["name"] == "auto-intake"]
+        require(len(intake) == 1 and intake[0]["run_id"] == run and
+                intake[0]["head_sha"] == row["head_sha"] and intake[0]["status"] == "completed" and
+                intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
     history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
     require(len(hits)==1 and hits[0]["id"]==run and hits[0]["run_attempt"]==1,
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
+    previous = [r for r in history["workflow_runs"] if r["id"] != run and
+                r.get("display_title", "").startswith("BGZONA auto ")]
+    require(previous or history["total_count"] == len(history["workflow_runs"]),
+            "AUTO_HISTORY_WINDOW")
+    if previous:
+        require(max(previous, key=lambda r: r["run_number"])["conclusion"] == "success",
+                "AUTO_PREVIOUS_UNRESOLVED")
     protection=public("/rulesets/26657290")
     require(protection["enforcement"]=="active" and
             {r["type"] for r in protection["rules"]}=={"update","deletion","non_fast_forward"} and
@@ -85,21 +83,29 @@ def control_run(run, schedule=None):
             protection["conditions"]["ref_name"]["exclude"]==[],"AUTO_CONTROL_PROTECTION")
     return row
 
+
 def context(env):
     params = parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes())["inputs"]
     require(env["GITHUB_ACTIONS"]=="true" and env["GITHUB_REPOSITORY"]==CONTROL and
             env["GITHUB_REPOSITORY_ID"]==str(CONTROL_ID) and
             env["GITHUB_REF"]==CONTROL_REF and env["GITHUB_REF_PROTECTED"]=="true" and
-            env["GITHUB_ACTOR_ID"]==str(BOT) and env["GITHUB_RUN_ATTEMPT"]=="1" and
+            env["GITHUB_ACTOR_ID"]==str(DISPATCH_ACTOR) and env["GITHUB_RUN_ATTEMPT"]=="1" and
             env["GITHUB_EVENT_NAME"]=="workflow_dispatch" and
             env["GITHUB_WORKFLOW_REF"]==CONTROL+"/.github/workflows/shared-media.yml@"+CONTROL_REF and
             gb.oid(env["GITHUB_WORKFLOW_SHA"]) and params.get("mode")=="auto" and
-            set(params)<={"mode","schedule_run","source_run","private_run","record_sha256"} and
-            all(params.get(k,"")=="" for k in ("source_run","private_run","record_sha256")) and
-            params.get("schedule_run","").isdigit(), "AUTO_CONTEXT")
-    row=control_run(int(env["GITHUB_RUN_ID"]), int(params["schedule_run"]))
+            set(params)<={"mode","relay_run","source_run","private_run","record_sha256"} and
+            all(params.get(k,"")=="" for k in ("private_run","record_sha256")),
+            "AUTO_CONTEXT")
+    source, relay = push_relay.number(params.get("source_run","")), push_relay.number(params.get("relay_run",""))
+    phase = env["AUTO_PHASE"]
+    require(phase in ("intake","assets","dev") and
+            env["GITHUB_JOB"] == "auto-" + phase, "AUTO_JOB")
+    api = proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"]) if phase == "intake" else None
+    row=control_run(int(env["GITHUB_RUN_ID"]), source, relay, private_api=api,
+                    private_main=env.get("PRIVATE_WORKFLOW_COMMIT"))
     require(row["head_sha"]==env["GITHUB_WORKFLOW_SHA"], "AUTO_WORKER_PIN")
-    return params
+    return params | ({"source_sha":row["source_sha"]} if phase == "intake" else {})
+
 
 def run_identity(api, run, source, *, complete=True):
     row, _ = api.get(f"/actions/runs/{run}/attempts/1")
@@ -255,6 +261,12 @@ def next_source(api, cursor, *, known=None):
         require(gb.oid(parent),"AUTO_SOURCE_PARENT")
         chain.append((parent,here)); here=parent
     require(here==cursor,"AUTO_SOURCE_DIVERGENT")
+    if known is not None:
+        require(gb.oid(known), "AUTO_RELAY_SOURCE")
+        if known == cursor: return None
+        positions = [i for i, (_, after) in enumerate(chain) if after == known]
+        require(len(positions) == 1, "AUTO_RELAY_SOURCE")
+        chain = chain[positions[0]:]
     if not chain: return None
     before,after=chain[-1]
     listing,more=api.get(f"/actions/workflows/{artifact.WORKFLOW}/runs?event=push&branch="+
@@ -334,13 +346,13 @@ def private_prepare(env):
             params["source_run"].isdigit() and params["control_run"].isdigit(),"AUTO_PREPARE_INPUT")
     run=int(params["source_run"])
     standard.verified_dispatch(api,env,".github/workflows/e4f-standard-prepare.yml",run,normal=True)
-    control_run(int(params["control_run"]))
+    control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
     lab=Lab.create(Path(env["RUNNER_TEMP"])/"auto-private")
     pins=parse(standard.BOOTSTRAP.read_bytes())
     domain=standard.public_baseline(lab,pins,normal=True)
     repo=lab.root/"source.git"; standard.fetch_source(repo,api.token)
     source,_=api.get(f"/actions/runs/{run}/attempts/1"); source=source["head_sha"]
-    args=dict(source=source,run=run,code=env["WORKER_COMMIT"],manifest=env["MANIFEST_SHA256"],
+    args=dict(source=source,run=run,code=push_relay.SOURCE_CODE,manifest=push_relay.SOURCE_MANIFEST,
               actor=int(env["TRUSTED_DISPATCH_ACTOR"]))
     reg,client,factory=registration(api,lab,repo,pins,**args)
     view=independent_prefix(reg,domain)
@@ -408,7 +420,7 @@ def private_guard(env):
     mode=params["mode"]
     path=".github/workflows/e4f-d3-guard"+("-observe" if mode=="observe" else "")+".yml"
     standard.verified_dispatch(api,env,path,None,normal=True)
-    control_run(int(params["control_run"]))
+    control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
     item=standard.proposal(params["record_sha256"],normal=True)
     require(item["ledger_parent"]==params["ledger_parent"],"AUTO_GUARD_LEDGER")
     p=item["handoff"]
@@ -420,7 +432,7 @@ def private_guard(env):
     repo=lab.root/"source.git"; standard.fetch_source(repo,api.token)
     run=item["source_run"]; source,_=api.get(f"/actions/runs/{run}/attempts/1")
     reg,clients,_=registration(api,lab,repo,pins,source=source["head_sha"],run=run,
-        code=env["WORKER_COMMIT"],manifest=env["MANIFEST_SHA256"],
+        code=push_relay.SOURCE_CODE,manifest=push_relay.SOURCE_MANIFEST,
         actor=int(env["TRUSTED_DISPATCH_ACTOR"]),handoff=pin)
     view=independent_prefix(reg,domain)
     pending=reg.verify()
@@ -468,7 +480,7 @@ def main(env):
     import control_entry as control
     from e4f_github import GitHubLedgerAppend
     from request_executor import binding
-    context(env)
+    params=context(env)
     phase=env["AUTO_PHASE"]
     pins=parse(standard.BOOTSTRAP.read_bytes())
     if phase=="intake":
@@ -486,7 +498,7 @@ def main(env):
         bound=binding(state["recovered"],latest["primary_main"])
         require(bound is not None,"AUTO_ACCEPTED_REQUEST")
         if bound["final"]:
-            work=next_source(api,previous["head_sha"])
+            work=next_source(api,previous["head_sha"],known=params["source_sha"])
             if work is None or work=="WAIT":
                 with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f: f.write("work=false\n")
                 print("AUTO_IDLE" if work is None else "AUTO_SOURCE_PENDING")
@@ -529,7 +541,6 @@ def main(env):
     checked=verify_public_result(packet)
     print("AUTO_PUBLIC_DEV_VERIFIED",packet["cid"],digest(data(checked)))
 
-SCHEDULER_PINS = {'.github/workflows/lab-scheduled.yml': 'a00ef115fe2ab76c9cb08fe517f30c3fbee95119da780b61445b1864b454c5ad', 'tools/cp2b/c5c/lab_schedule.py': '4b12de91ca892ff87ba707882e25955ca4b916caaad7b5a757bfa5376cc43690'}
 
 def verify_public_result(proof_packet, *, get=None):
     """Verify actual DEV bytes using the same existing Privacy Gate."""
