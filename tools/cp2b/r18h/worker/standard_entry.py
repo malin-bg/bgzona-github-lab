@@ -318,9 +318,16 @@ def public_asset(release, name, size, limit):
     except HTTPError as exc:
         redirected=exc.headers.get('Location','')
         u=urlsplit(redirected)
-        require(exc.code in (301,302,303,307,308) and u.scheme=='https' and
-                u.netloc in ('release-assets.githubusercontent.com','objects.githubusercontent.com'),
-                'STANDARD_BACKUP_REDIRECT')
+        permitted = (exc.code in (301,302,303,307,308) and u.scheme=='https' and
+                     u.netloc in ('release-assets.githubusercontent.com','objects.githubusercontent.com'))
+        if not permitted:
+            # Fixed fields only. Never emit Location, query, userinfo or exception text.
+            host = u.hostname or ''
+            if len(host)>253 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789.-' for c in host):
+                host = 'INVALID_HOST'
+            print(json.dumps({'asset_id': matches[0]['id'], 'http_status': exc.code,
+                              'redirect_hostname': host}, sort_keys=True), flush=True)
+        require(permitted, 'STANDARD_BACKUP_REDIRECT')
         response=opener.open(Request(redirected),timeout=30)
     with response:
         raw=response.read(size+1)

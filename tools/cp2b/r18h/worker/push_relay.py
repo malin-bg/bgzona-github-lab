@@ -68,11 +68,16 @@ def source_evidence(api, source_run):
                     [p["sha"] for p in commit["parents"]], ref=REF)
     return source, item
 
-def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time.sleep):
+def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time.sleep, completed_recovery=False):
     """A wake is a hint; both Lab intake and PRIVATE writers independently verify it."""
     need(type(relay_run) is int and relay_run > 0 and proof.oid(main_commit), "RELAY_PIN")
     workflow, _ = get(api, "/actions/workflows/" + PATH.rsplit("/", 1)[1])
-    need(workflow["path"] == PATH and workflow["state"] == "active" and
+    if completed_recovery:
+        need(not running and (source_run, relay_run, main_commit, workflow["id"]) ==
+             (CATCHUP_RUN, 42471208063, "7c15826ee3fd93dd327ae321970afe139ad71ffd", 411050691),
+             "RELAY_RECOVERY_SCOPE")
+    need(workflow["path"] == PATH and
+         workflow["state"] == ("disabled_manually" if completed_recovery else "active") and
          type(workflow["id"]) is int and workflow["id"] > 0, "RELAY_WORKFLOW")
     for attempt in range(21):
         row, _ = get(api, f"/actions/runs/{relay_run}/attempts/1")
