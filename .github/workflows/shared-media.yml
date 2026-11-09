@@ -549,7 +549,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "DEV_ACTIONS_TOKEN": "${{ steps.dev-app.outputs.token }}",
-            "C3_DEV_MAIN": "3bbc6e1320858ee7ca81370971bc6ff046ac3680",
+            "C3_DEV_MAIN": "b3813f638c77546495dcdca9fef235914b380211",
             "AUTO_PHASE": "dev",
             "AUTO_RECORD": "${{ needs.auto-intake.outputs.record }}"
           },
