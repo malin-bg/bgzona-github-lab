@@ -221,9 +221,10 @@ RESUME_MARKER_BLOB = 'c91a76c5d3a4628394230203cb779aeb8de20e94'
 RESUME_MARKER_SHA = 'e119ae65abafef71eaccf84a4de8a25946b8ebb27364bf202402ec7893b11908'
 
 
-def _failed_job_log(token):
+def _failed_job_log(token, *, job=RESUME_FAILED_JOB, expected_sha=RESUME_FAILED_LOG_SHA,
+                    expected_line=RESUME_FAILED_LINE):
     opener = build_opener(NoRedirect)
-    endpoint = f'https://api.github.com/repos/{CONTROL}/actions/jobs/{RESUME_FAILED_JOB}/logs'
+    endpoint = f'https://api.github.com/repos/{CONTROL}/actions/jobs/{job}/logs'
     req = Request(endpoint, headers={'Authorization': 'Bearer '+token,
         'Accept': 'application/vnd.github+json', 'User-Agent': 'bgzona-e4f/1',
         'X-GitHub-Api-Version': '2026-03-10'})
@@ -238,8 +239,8 @@ def _failed_job_log(token):
                 url.hostname.endswith('.blob.core.windows.net'), 'E4F_RESUME_LOG_REDIRECT')
     with opener.open(Request(target), timeout=15) as stream:
         raw = stream.read(2_000_001)
-    require(len(raw) <= 2_000_000 and digest(raw) == RESUME_FAILED_LOG_SHA and
-            raw.splitlines().count(RESUME_FAILED_LINE) == 1, 'E4F_RESUME_PRE_CAS_LOG')
+    require(len(raw) <= 2_000_000 and digest(raw) == expected_sha and
+            raw.splitlines().count(expected_line) == 1, 'E4F_RESUME_PRE_CAS_LOG')
 
 
 class PrivateGuardAttester:
@@ -279,7 +280,7 @@ class PrivateGuardAttester:
                 type(result.get('workflow_run_id')) is int and result['workflow_run_id'] > 0,
                 'E4F_GUARD_DISPATCH_UNRESOLVED')
         run_id = result['workflow_run_id']
-        deadline = self.clock() + 120
+        deadline = self.clock() + 660  # 10-minute guard job + bounded queue/metadata allowance
         while True:
             status, row = self.request(root + f'/actions/runs/{run_id}', self.token)
             require(status in (200, 404), 'E4F_GUARD_RUN_UNRESOLVED')
@@ -522,6 +523,14 @@ class GitHubLedgerAppend:
         return self._commit_once(tip, previous, record, payload)
 
     def append_reserved(self, item, control_commit):
+        from auto_intake import M1_RECORD,m1_reserved
+        if digest(data(item['record']))==M1_RECORD:
+            require(self.token is not None and type(self.attester) is PrivateGuardAttester,
+                    'M1_LEDGER_SCOPE')
+            tip,previous,record=item['ledger_parent'],item['previous'],item['record']
+            payload=ledger_cas_payload(tip,previous,record)
+            m1_reserved(self.attester,self.token,control_commit,item)
+            return self._commit_once(tip,previous,record,payload)
         require(self.token is not None and type(self.attester) is PrivateGuardAttester and
                 oid(control_commit) and control_commit != RESUME_FAILED_COMMIT and
                 digest(data(item)) == RESUME_PROPOSAL_SHA and

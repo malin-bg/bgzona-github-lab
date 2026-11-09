@@ -54,6 +54,116 @@ F1_FAILED_GUARD = 42528340713
 F1_NUMBER = 17
 
 
+# One authorized continuation of the exact stopped M1 operation.
+M1_NUMBER = 20
+M1_SOURCE = 42622874725
+M1_RELAY = 42622936493
+M1_PREPARE = 42623062758
+M1_GUARD = 42623769606
+M1_FAILED = 42622976262
+M1_FAILED_JOB = 129179532352
+M1_CODE = '39acf4be6036eafe8da8cdbd52d33e856b98b30c'
+M1_PRIVATE = 'f8fdb186a2e31d5cd564b59ba6322dad1e26f542'
+M1_SOURCE_SHA = '51f02da989b6796c9a02843a56933d7adf18bd0f'
+M1_RECORD = '56615fa2ad807a18844387ed4415476cd271ed014c36422455b9ac26303bbe72'
+M1_PROPOSAL = 'f09a44b55744bbc0875ed4bd56d5831522089c7f6200527297882af9ea7d0ad4'
+M1_HANDOFF = {'head': '28966246d936de7751c3b36464f9e1a5d7818d8e', 'mirror': '7fd63471b6cc3215315ec58c72e00d2f3a41832babb416d6e91afe03f170d590', 'parent': '105518b4279b441b0afc5ab61339ea07fcf6120f', 'request': '5badba0791bc3280ba88d06a19bbfb64df750d35888efe14e78d45de6fb3de67', 'sha256': '74082db5bd32afb558ae8077332ac056d955bb5f28a4327f93ed8c0bdf5d9609', 'size': 329696}
+M1_HANDOFF_PATH = 'private-recovery/c7c46c7cea75c34c1c2e96bb7e38c5fec4b5209b0737a382f560399bb1b9e1dc/7fd63471b6cc3215315ec58c72e00d2f3a41832babb416d6e91afe03f170d590/checkpoint.json'
+M1_HANDOFF_BLOB = '244de04912acb18b0abb8556c62d302c39d96f79'
+M1_RECOVERY = '669e2ebc5ea2c8a59ebe55c5cde0147b95b65626'
+M1_MARKER_PATH = 'private-recovery/59158db7f72baa807f6fe34868aad962a511e25a70252f5ce96b53f37195dfc3/7fd63471b6cc3215315ec58c72e00d2f3a41832babb416d6e91afe03f170d590/checkpoint.json'
+M1_MARKER_BLOB = '7e092d9cd98c2e15f3277e574476fb87e6a89195'
+M1_MARKER_SHA = '5802e3f1c0584453fa87b15632bdb45997428c2444bb6d0ca97fa5db765c1e1e'
+M1_MARKER = {'base': '7fd63471b6cc3215315ec58c72e00d2f3a41832babb416d6e91afe03f170d590', 'index': 7, 'record': '56615fa2ad807a18844387ed4415476cd271ed014c36422455b9ac26303bbe72', 'request': 'b67347ad197e0a140d6e488358a02996bbc11a96f51c9ffd9d42ce5d45e9e27c', 'source': '43e176c9efe25cbc3ae3593629d201238534bd8e', 'version': 1}
+M1_GUARD_JOB = 129182209639
+M1_GUARD_TITLE = 'E4F D3 guard 52e1429e0832ba50319959c8b35f5058adde01e2ff111b764950e897d4fb6fc0'
+M1_LOG_SHA = 'd9d076104589aedabcdda2ac924b0c224ffe109c7716fcd0d84f74eee4663baf'
+M1_LOG_LINE = '2026-11-09T13:16:50.6527507Z STOP E4F_GUARD_RUN_UNRESOLVED'
+M1_ARTIFACT = 13677606296
+M1_ARTIFACT_SHA = 'sha256:5f4e7a7c565878a64dca47b7516c8c46815f7fd13b1eab624db9793f3e46f632'
+
+def m1_failed():
+    """The only previous failed writer excluded for this single provider run."""
+    row=public(f"/actions/runs/{M1_FAILED}/attempts/1")
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['head_sha'],
+             row['actor']['id'],row['head_branch'],row['event'],row['display_title'],row['status'],row['conclusion'])==
+            (M1_FAILED,CONTROL_WORKFLOW,19,1,M1_CODE,DISPATCH_ACTOR,'automation-control','workflow_dispatch',
+             f'BGZONA auto {M1_SOURCE}:{M1_RELAY}','completed','failure'),'M1_FAILED_IDENTITY')
+    jobs=public(f"/actions/runs/{M1_FAILED}/attempts/1/jobs?per_page=100")['jobs']
+    failed=[j for j in jobs if j['conclusion']=='failure']
+    require(len(failed)==1 and (failed[0]['id'],failed[0]['name'])==(M1_FAILED_JOB,'auto-intake') and
+            all(j['conclusion']=='skipped' for j in jobs if j['name'] in ('auto-assets','auto-dev')),
+            'M1_PRE_CAS_JOB')
+
+
+def m1_prepared(api, item=None):
+    """Reuse the original successful preparation, immutable release and exact E4M marker."""
+    import base64
+    from hashlib import sha1
+    row,_=api.get(f'/actions/runs/{M1_PREPARE}/attempts/1')
+    require((row['id'],row['workflow_id'],row['run_attempt'],row['event'],row['repository']['id'],
+             row['actor']['id'],row['head_branch'],row['head_sha'],row['display_title'],row['status'],row['conclusion'])==
+            (M1_PREPARE,408733317,1,'workflow_dispatch',standard.PIN.numeric_id,353092585,'main',M1_PRIVATE,
+             f'R18H prepare {M1_SOURCE}','completed','success'),'M1_PREPARE_IDENTITY')
+    artifacts,more=api.get(f'/actions/runs/{M1_PREPARE}/artifacts?per_page=100')
+    a=[a for a in artifacts['artifacts'] if a['id']==M1_ARTIFACT]
+    require(not more and len(a)==1 and a[0]['digest']==M1_ARTIFACT_SHA and not a[0]['expired'] and
+            a[0]['workflow_run']['id']==M1_PREPARE,'M1_ARTIFACT_IDENTITY')
+    verified=standard.proposal(M1_RECORD,normal=True)
+    require((item is None or verified==item) and digest(data(verified))==M1_PROPOSAL and
+            verified['source_run']==M1_SOURCE and verified['handoff']==M1_HANDOFF and
+            verified['record']['phase']=='accepted','M1_CANDIDATE_IDENTITY')
+    marker,_=api.get('/contents/'+M1_MARKER_PATH+'?ref='+M1_RECOVERY)
+    raw=base64.b64decode(''.join(marker['content'].splitlines()),validate=True)
+    require(marker['sha']==M1_MARKER_BLOB and len(raw)==marker['size']<=1024 and
+            digest(raw)==M1_MARKER_SHA and parse(raw)==M1_MARKER,'M1_RESERVATION_IDENTITY')
+    handoff,_=api.get('/contents/'+M1_HANDOFF_PATH+'?ref='+M1_HANDOFF['head'])
+    payload=base64.b64decode(''.join(handoff['content'].splitlines()),validate=True)
+    require(handoff['sha']==M1_HANDOFF_BLOB and len(payload)==M1_HANDOFF['size']==handoff['size'] and
+            digest(payload)==M1_HANDOFF['sha256'],'M1_HANDOFF_IDENTITY')
+    commit,_=api.get('/git/commits/'+M1_RECOVERY)
+    require([p['sha'] for p in commit['parents']]==[M1_HANDOFF['head']],'M1_RECOVERY_ANCESTRY')
+    for ref,want in (('heads/cp2b-private-standard-recovery-c2',M1_RECOVERY),
+                     ('heads/cp2b-private-standard-source-r1',M1_SOURCE_SHA)):
+        head,_=api.get('/git/ref/'+ref)
+        require(head['ref']=='refs/'+ref and head['object']['type']=='commit' and
+                head['object']['sha']==want,'M1_PRIVATE_STATE_CHANGED')
+    require(public('/git/ref/heads/automation-ledger')['object']['sha']==verified['ledger_parent'],
+            'M1_LEDGER_ALREADY_MOVED')
+    for ref,want in (('refs/heads/main',verified['previous']['primary_main']),
+                     ('refs/bgzona/witness',verified['previous']['primary_witness'])):
+        require(control_ref_assets(ref)==want,'M1_ASSETS_CHANGED')
+    return verified
+
+
+def control_ref_assets(ref):
+    from control_entry import assets_ref
+    return assets_ref(ref)
+
+
+def m1_reserved(attester, token, control_commit, item):
+    """Read-only proof of the original fresh grant; no guard dispatch or reservation."""
+    from e4f_github import PrivateGuardAttester,_failed_job_log
+    require(type(attester) is PrivateGuardAttester and gb.oid(control_commit) and control_commit!=M1_CODE and
+            attester.control_run>0 and attester.workflow_id==408733315 and attester.actor==353092585,
+            'M1_GUARD_SCOPE')
+    api=proof.GitHub(attester.token)
+    row=control_run(attester.control_run,M1_SOURCE,M1_RELAY,private_api=api,private_main=attester.commit)
+    require(row['head_sha']==control_commit and row['run_number']==M1_NUMBER,'M1_CONTROL_COMMIT')
+    _failed_job_log(token,job=M1_FAILED_JOB,expected_sha=M1_LOG_SHA,expected_line=M1_LOG_LINE.encode())
+    api=proof.GitHub(attester.token)
+    m1_prepared(api,item)
+    head,_=api.get('/git/ref/heads/main')
+    require(head['object']['sha']==attester.commit,'M1_PRIVATE_CODE_MOVED')
+    original=PrivateGuardAttester(attester.token,408733315,M1_PRIVATE,353092585,attester.control_run,
+                                  request=attester.request)
+    status,guard=attester.request(f'/repos/{standard.PIN.name}/actions/runs/{M1_GUARD}/attempts/1',attester.token)
+    require(status==200,'M1_GUARD_READ')
+    original._check_completed(guard,M1_GUARD,408733315,'.github/workflows/e4f-d3-guard.yml',M1_GUARD_TITLE)
+    require(guard['triggering_actor']['id']==353092585 and
+            original._job_evidence(M1_GUARD,'reserve',M1_GUARD_JOB)=='fresh','M1_GUARD_GRANT')
+
+
 def f1_failed(api=None):
     failed = public(f"/actions/runs/{F1_FAILED_LAB}/attempts/1")
     require((failed["id"],failed["workflow_id"],failed["run_number"],failed["run_attempt"],
@@ -221,6 +331,10 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
              "automation-control", ".github/workflows/shared-media.yml",
              ref["object"]["sha"], "in_progress"), "AUTO_CONTROL_IDENTITY")
     title = row["display_title"]
+    m1 = row["run_number"]==M1_NUMBER and title==f"BGZONA auto {M1_SOURCE}:{M1_RELAY}"
+    if m1:
+        require(row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"M1_CONTROL_OWNER")
+        m1_failed()
     recovering = title.startswith("BGZONA auto-resume ")
     f1 = title.startswith(F1_PREFIX)
     require(title.startswith("BGZONA auto ") or recovering or f1, "AUTO_RELAY_LINK")
@@ -240,8 +354,8 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             (relay is None or relay == linked_relay), "AUTO_RELAY_LINK")
     if private_api is not None:
         verified = push_relay.verify(private_api, linked_source, linked_relay,
-                                     F1_ORIGIN_MAIN if f1 else (RECOVERY_RELAY_MAIN if recovering else private_main),
-                                     completed_recovery=(recovering or f1))
+                                     M1_PRIVATE if m1 else (F1_ORIGIN_MAIN if f1 else (RECOVERY_RELAY_MAIN if recovering else private_main)),
+                                     completed_recovery=(recovering or f1 or m1))
         row = row | {"source_sha": verified["head_sha"]}
     else:
         # Assets/DEV inherit the same immutable workflow and accepted D3 proof.
@@ -253,14 +367,19 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
     history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
-    require(len(hits)==1 and hits[0]["id"]==run and hits[0]["run_attempt"]==1,
+    require((len(hits)==1 or m1 and len(hits)==2 and {r["id"] for r in hits}=={run,M1_FAILED}) and
+            max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
-                not (f1 and r["id"] == F1_FAILED_LAB)]
+                not (f1 and r["id"] == F1_FAILED_LAB) and
+                not (m1 and r["id"]==M1_FAILED)]
+    if m1:
+        require(history["total_count"]==len(history["workflow_runs"]) and
+                all(r["id"]==run or r["run_number"]<M1_NUMBER for r in history["workflow_runs"]),"M1_HISTORY")
     if f1:
         failed=[r for r in history["workflow_runs"] if r["id"]==F1_FAILED_LAB]
         require(history["total_count"]==len(history["workflow_runs"])==F1_NUMBER and
@@ -713,6 +832,13 @@ def main(env):
             f.write("record="+F1_RECORD+"\nwork=true\n")
         print("F1_PREPARED_D3_FINAL_VERIFIED",commit,F1_RECORD)
         return
+    if phase=="intake" and int(env["GITHUB_RUN_NUMBER"])==M1_NUMBER and (params["source_run"],params["relay_run"])==(str(M1_SOURCE),str(M1_RELAY)):
+        api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
+        item=m1_prepared(api)
+        ledger=GitHubLedgerAppend(env["GH_TOKEN"],control.attach_guard(env,c3=True))
+        status,commit=ledger.append_reserved(item,env["GITHUB_WORKFLOW_SHA"])
+        require(status in ("APPENDED","OBSERVED") and gb.oid(commit),"M1_RESERVED_D3_READBACK")
+        print("M1_RESERVED_D3_VERIFIED",commit,M1_RECORD,flush=True)
     if phase=="intake":
         api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
         if fast_idle(api,pins):
