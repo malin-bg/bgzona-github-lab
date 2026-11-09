@@ -55,7 +55,7 @@ F1_NUMBER = 17
 
 
 # One authorized continuation of the exact stopped M1 operation.
-M1_NUMBER = 20
+M1_NUMBER = 21
 M1_SOURCE = 42622874725
 M1_RELAY = 42622936493
 M1_PREPARE = 42623062758
@@ -82,6 +82,12 @@ M1_LOG_LINE = '2026-11-09T13:16:50.6527507Z STOP E4F_GUARD_RUN_UNRESOLVED'
 M1_ARTIFACT = 13677606296
 M1_ARTIFACT_SHA = 'sha256:5f4e7a7c565878a64dca47b7516c8c46815f7fd13b1eab624db9793f3e46f632'
 
+M1_SCOPE_FAILED = 42631353090
+M1_SCOPE_FAILED_JOB = 129208179227
+M1_SCOPE_FAILED_CODE = 'b9439d24be2e10d826cc5a41e541223e3170ec62'
+M1_SCOPE_LOG_SHA = '0bf521e823172d973920f793e72591bd78d26e6f4c5e0d2948eb6dd17ea22a7d'
+M1_SCOPE_LOG_LINE = b'2026-11-09T14:06:14.4475444Z STOP E4F_CONTROL_UNRESOLVED'
+
 def m1_failed():
     """The only previous failed writer excluded for this single provider run."""
     row=public(f"/actions/runs/{M1_FAILED}/attempts/1")
@@ -94,6 +100,16 @@ def m1_failed():
     require(len(failed)==1 and (failed[0]['id'],failed[0]['name'])==(M1_FAILED_JOB,'auto-intake') and
             all(j['conclusion']=='skipped' for j in jobs if j['name'] in ('auto-assets','auto-dev')),
             'M1_PRE_CAS_JOB')
+    row=public(f"/actions/runs/{M1_SCOPE_FAILED}/attempts/1")
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['head_sha'],
+             row['actor']['id'],row['head_branch'],row['event'],row['display_title'],row['status'],row['conclusion'])==
+            (M1_SCOPE_FAILED,CONTROL_WORKFLOW,20,1,M1_SCOPE_FAILED_CODE,DISPATCH_ACTOR,'automation-control',
+             'workflow_dispatch',f'BGZONA auto {M1_SOURCE}:{M1_RELAY}','completed','failure'),
+            'M1_SCOPE_FAILED_IDENTITY')
+    jobs=public(f"/actions/runs/{M1_SCOPE_FAILED}/attempts/1/jobs?per_page=100")['jobs']
+    require([(j['id'],j['name']) for j in jobs if j['conclusion']=='failure']==
+            [(M1_SCOPE_FAILED_JOB,'auto-intake')] and all(j['conclusion']=='skipped' for j in jobs
+            if j['name'] in ('auto-assets','auto-dev')),'M1_SCOPE_PRE_CAS_JOB')
 
 
 def m1_prepared(api, item=None):
@@ -151,6 +167,7 @@ def m1_reserved(attester, token, control_commit, item):
     row=control_run(attester.control_run,M1_SOURCE,M1_RELAY,private_api=api,private_main=attester.commit)
     require(row['head_sha']==control_commit and row['run_number']==M1_NUMBER,'M1_CONTROL_COMMIT')
     _failed_job_log(token,job=M1_FAILED_JOB,expected_sha=M1_LOG_SHA,expected_line=M1_LOG_LINE.encode())
+    _failed_job_log(token,job=M1_SCOPE_FAILED_JOB,expected_sha=M1_SCOPE_LOG_SHA,expected_line=M1_SCOPE_LOG_LINE)
     api=proof.GitHub(attester.token)
     m1_prepared(api,item)
     head,_=api.get('/git/ref/heads/main')
@@ -367,7 +384,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
     history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
-    require((len(hits)==1 or m1 and len(hits)==2 and {r["id"] for r in hits}=={run,M1_FAILED}) and
+    require((len(hits)==1 or m1 and len(hits)==3 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED}) and
             max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
@@ -376,7 +393,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
-                not (m1 and r["id"]==M1_FAILED)]
+                not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED))]
     if m1:
         require(history["total_count"]==len(history["workflow_runs"]) and
                 all(r["id"]==run or r["run_number"]<M1_NUMBER for r in history["workflow_runs"]),"M1_HISTORY")
