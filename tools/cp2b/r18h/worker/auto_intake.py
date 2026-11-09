@@ -55,7 +55,7 @@ F1_NUMBER = 17
 
 
 # One authorized continuation of the exact stopped M1 operation.
-M1_NUMBER = 22
+M1_NUMBER = 23
 M1_SOURCE = 42622874725
 M1_RELAY = 42622936493
 M1_PREPARE = 42623062758
@@ -88,10 +88,25 @@ M1_SCOPE_FAILED_CODE = 'b9439d24be2e10d826cc5a41e541223e3170ec62'
 M1_SCOPE_LOG_SHA = '0bf521e823172d973920f793e72591bd78d26e6f4c5e0d2948eb6dd17ea22a7d'
 M1_SCOPE_LOG_LINE = b'2026-11-09T14:06:14.4475444Z STOP E4F_CONTROL_UNRESOLVED'
 
-M1_ACCEPTED_LEDGER = '31424621d5cccfb69f1bc4b4c83b94880113f077'
+M1_ACCEPTED_LEDGER = 'a662ef3ac4490ac88959e77e2215fe474f56d730'
 M1_ACCEPTED_FAILED = 42635784385
 M1_ACCEPTED_FAILED_JOB = 129223450491
 M1_ACCEPTED_CODE = '55e769deea9ef81072a400080b44a2e4d07dc0a0'
+
+M1_PROGRESS_FAILED = 42678792257
+M1_PROGRESS_FAILED_JOB = 129367376828
+M1_PROGRESS_CODE = '2c8b60bc249a30061ffa461d46a72e9a3029bbed'
+M1_PREFIX_RECORD = 'fd79935e5e81cbf784e63f9ed495a166d07ee2cfa2134416d5b9c6557e1e6bd5'
+M1_FINAL_PREPARE = 42680314792
+M1_FINAL_PRIVATE = '8351cdf35de5551b0aa959d14156f5bc14460e74'
+M1_FINAL_WORKER = '1d2b6566c80008cba0c09cc89b931083e8e259e1'
+M1_FINAL_ARTIFACT = 13703265489
+M1_FINAL_ARTIFACT_SHA = '7f9798b5a6393421ec1f4ab311ed633b680e5e9a2c97c24fbf37aa6a9c640a4f'
+M1_FINAL_PROPOSAL = '79f499ba5951a19e38986af41af8cf02bc4127aaf84b3ae921a6a5139233c974'
+M1_FINAL_RECORD = '784ebec1eb9efb673b890118eead1849f44ac07e21caf00bfba590ebb5006271'
+M1_PLAN = '2b1084941f9deb317ae7b7d62340d5a71bf951e9a3031c28178876e5c044aefd'
+M1_RECOVERY_STEP8 = 'ee6c2c79e6b0d6705c7dd0abea0fb037ae039222'
+M1_FINAL_MANIFEST = '1b2a4065a6e14e960877341eac23e5fb77029272ea240408b7e4c63116dcbf9b'
 
 def m1_failed():
     """The only previous failed writer excluded for this single provider run."""
@@ -125,6 +140,17 @@ def m1_failed():
     require([(j['id'],j['name']) for j in jobs if j['conclusion']=='failure']==
             [(M1_ACCEPTED_FAILED_JOB,'auto-intake')] and all(j['conclusion']=='skipped' for j in jobs
             if j['name'] in ('auto-assets','auto-dev')),'M1_ACCEPTED_FAILED_JOB')
+    row=public(f"/actions/runs/{M1_PROGRESS_FAILED}/attempts/1")
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['head_sha'],
+             row['actor']['id'],row['head_branch'],row['event'],row['display_title'],row['status'],row['conclusion'])==
+            (M1_PROGRESS_FAILED,CONTROL_WORKFLOW,22,1,M1_PROGRESS_CODE,DISPATCH_ACTOR,'automation-control',
+             'workflow_dispatch',f'BGZONA auto {M1_SOURCE}:{M1_RELAY}','completed','failure'),
+            'M1_PROGRESS_FAILED_IDENTITY')
+    jobs=public(f"/actions/runs/{M1_PROGRESS_FAILED}/attempts/1/jobs?per_page=100")['jobs']
+    require([(j['id'],j['name']) for j in jobs if j['conclusion']=='failure']==
+            [(M1_PROGRESS_FAILED_JOB,'auto-intake')] and all(j['conclusion']=='skipped' for j in jobs
+            if j['name'] in ('auto-assets','auto-dev')),'M1_PROGRESS_FAILED_JOB')
+
 
 
 
@@ -400,7 +426,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
     history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
-    require((len(hits)==1 or m1 and len(hits)==4 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED}) and
+    require((len(hits)==1 or m1 and len(hits)==5 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED}) and
             max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
@@ -409,7 +435,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
-                not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED))]
+                not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
     if m1:
         require(history["total_count"]==len(history["workflow_runs"]) and
                 all(r["id"]==run or r["run_number"]<M1_NUMBER for r in history["workflow_runs"]),"M1_HISTORY")
@@ -877,15 +903,26 @@ def main(env):
         print("F1_PREPARED_D3_FINAL_VERIFIED",commit,F1_RECORD)
         return
     if phase=="intake" and int(env["GITHUB_RUN_NUMBER"])==M1_NUMBER and (params["source_run"],params["relay_run"])==(str(M1_SOURCE),str(M1_RELAY)):
-        # The original candidate was already accepted. This is GET-only admission,
-        # never append_reserved, another reservation, or another CAS for record 7.
-        head=public('/git/ref/heads/automation-ledger')
-        require(head['object']['sha']==M1_ACCEPTED_LEDGER,'M1_ACCEPTED_PREFIX_MOVED')
-        item=standard.proposal(M1_RECORD,normal=True)
-        require(digest(data(item))==M1_PROPOSAL and item['source_run']==M1_SOURCE and
-                item['record']['index']==7 and item['record']['phase']=='accepted',
-                'M1_ACCEPTED_PREFIX_IDENTITY')
-        print('M1_ACCEPTED_PREFIX_OBSERVED',M1_ACCEPTED_LEDGER,M1_RECORD,flush=True)
+        # Only this approved completed preparation; no new PRIVATE dispatch.
+        require(public('/git/ref/heads/automation-ledger')['object']['sha']==M1_ACCEPTED_LEDGER,
+                'M1_ACCEPTED_PREFIX_MOVED')
+        item=control.private_candidate(env,'prepare',M1_SOURCE,None,
+                                       existing_run=M1_FINAL_PREPARE,normal=True)
+        require(digest(data(item['record']))==M1_FINAL_RECORD,'M1_FINAL_CANDIDATE')
+        ledger=GitHubLedgerAppend(env['GH_TOKEN'],control.attach_guard(env,c3=True))
+        status,commit=ledger.append(item['ledger_parent'],item['previous'],item['record'])
+        require(status in ('APPENDED','OBSERVED') and gb.oid(commit),'AUTO_D3_READBACK')
+        verified=standard.public_baseline(Lab.create(Path(env['RUNNER_TEMP'])/('m1-final-'+uuid4().hex)),pins,normal=True).read()
+        require(verified['latest']==item['record'] and
+                digest(data(verified['records'][7]))==M1_RECORD and
+                digest(data(verified['records'][8]))==M1_PREFIX_RECORD,'M1_FINAL_PREFIX')
+        bound=binding(verified['recovered'],item['record']['primary_main'])
+        require(bound is not None and (bound['request'],bound['plan'],bound['step'],bound['steps'],bound['phase'],bound['final'])==
+                (M1_MARKER['request'],M1_PLAN,2,2,'staged',True),'AUTO_FINAL_REQUIRED')
+        with open(env['GITHUB_OUTPUT'],'a',encoding='ascii') as f:
+            f.write('record='+M1_FINAL_RECORD+'\nwork=true\n')
+        print('M1_FINAL_D3_VERIFIED',commit,M1_FINAL_RECORD,flush=True)
+        return
     if phase=="intake":
         api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
         if fast_idle(api,pins):

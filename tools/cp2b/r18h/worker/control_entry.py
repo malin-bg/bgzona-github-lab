@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from uuid import uuid4
 
 import github_backend as gb
 from e4f_github import (ASSETS, CONTROL, CONTROL_ID, LEDGER, ATOMIC, GitHubLedgerAppend,
@@ -78,11 +79,15 @@ def attach_guard(env, *, c3=False):
         int(env['PRIVATE_DISPATCH_ACTOR']),int(env['GITHUB_RUN_ID']),observe_workflow_id=rows[1])
 
 
+def temporary_lab(env, label):
+    require(label in ('r18h-control-final','r18h-control-proposal'),'E4F_TEMP_SCOPE')
+    return Lab.create(Path(env['RUNNER_TEMP'])/(label.rsplit('-',1)[-1]+'-'+uuid4().hex))
+
 def final_state(env, item, *, c3=False, normal=False):
     pins=parse(BOOTSTRAP.read_bytes())
     index=item['record']['index'] if normal else (3 if c3 else 2)
     require(item['record']['index']==index and item['record']['phase']=='staged','E4F_FINAL_D3_RECORD')
-    lab=Lab.create(Path(env['RUNNER_TEMP'])/'r18h-control-final')
+    lab=temporary_lab(env,'r18h-control-final')
     domain=public_baseline(lab,pins,normal=normal)
     accepted=domain.read()
     require(len(accepted['records'])==index+1 and accepted['latest']==item['record'] and
@@ -392,6 +397,34 @@ def verify_resume_refs(api, item, pins):
             (LEDGER,'commit',pins['ledger']),'E4F_RESUME_LEDGER_REF')
 
 
+def verify_m1_completed_prepare(api, env, run):
+    import auto_intake as auto
+    from registration_entry import pinned_file
+    require(run==auto.M1_FINAL_PREPARE and int(env['GITHUB_RUN_NUMBER'])==auto.M1_NUMBER and
+            env['PRIVATE_DISPATCH_ACTOR']=='353092585','M1_COMPLETED_PREPARE_SCOPE')
+    row=auto.control_run(int(env['GITHUB_RUN_ID']),auto.M1_SOURCE,auto.M1_RELAY,
+                         private_api=api,private_main=env['PRIVATE_WORKFLOW_COMMIT'])
+    require(row['source_sha']==auto.M1_SOURCE_SHA and row['head_sha']==env['GITHUB_WORKFLOW_SHA'],
+            'M1_COMPLETED_CONTROL_PIN')
+    for ref,want in (('heads/main',env['PRIVATE_WORKFLOW_COMMIT']),
+                     ('heads/cp2b-private-standard-source-r1',auto.M1_SOURCE_SHA),
+                     ('heads/cp2b-private-standard-recovery-c2',auto.M1_RECOVERY_STEP8)):
+        head,_=api.get('/git/ref/'+ref)
+        require(head['ref']=='refs/'+ref and head['object']['type']=='commit' and
+                head['object']['sha']==want,'M1_COMPLETED_PRIVATE_STATE')
+    require(auto.public('/git/ref/heads/automation-ledger')['object']['sha']==auto.M1_ACCEPTED_LEDGER,
+            'M1_ACCEPTED_PREFIX_MOVED')
+    for ref,want in ((MAIN,'923d8f8f67361ca2f725a232eaba02a8cac20bcc'),
+                     (WITNESS,'50e4a18cf85943114687f031fe03b556b48ac52e'),
+                     (STAGES[0],'923d8f8f67361ca2f725a232eaba02a8cac20bcc'),
+                     (STAGES[1],'50e4a18cf85943114687f031fe03b556b48ac52e')):
+        require(assets_ref(ref)==want,'M1_COMPLETED_ASSETS_STATE')
+    # Only workflow code is read here. PRIVATE handoff bytes stay on PRIVATE runners.
+    code=parse(pinned_file(api,'.github/workflows/e4f-standard-prepare.yml',auto.M1_FINAL_PRIVATE))
+    worker=code['jobs']['prepare']['env']
+    require((worker['WORKER_COMMIT'],worker['MANIFEST_SHA256'],worker['TRUSTED_DISPATCH_ACTOR'])==
+            (auto.M1_FINAL_WORKER,auto.M1_FINAL_MANIFEST,'353092585'),'M1_COMPLETED_IMMUTABLE_WORKER')
+
 def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=False, normal=False):
     import time
     from push_probe import GitHub
@@ -402,6 +435,8 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     token=env['PRIVATE_ACTIONS_TOKEN']
     api=GitHub(token)
     worker_commit=env['PRIVATE_WORKFLOW_COMMIT']
+    import auto_intake as auto
+    m1_resume=normal and (mode,source_run,existing_run)==('prepare',auto.M1_SOURCE,auto.M1_FINAL_PREPARE)
     private_path='.github/workflows/e4f-standard-'+mode+'.yml'
     path='/actions/workflows/'+private_path.rsplit('/',1)[1]
     wf,_=api.get(path)
@@ -409,12 +444,16 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
             gb.positive(wf['id']),'E4F_PRIVATE_PREPARE_PIN')
     args={'source_run':str(source_run)} if mode=='prepare' else {'previous_record':previous}
     if normal:
-        require(mode=="prepare" and existing_run is None and wf["id"]==408733317,"AUTO_PREPARE_WORKFLOW")
+        require(mode=="prepare" and (existing_run is None or m1_resume) and wf["id"]==408733317,"AUTO_PREPARE_WORKFLOW")
         args.update(route="auto",control_run=env["GITHUB_RUN_ID"])
     if c3:
         require(mode=='prepare' and existing_run is None and wf['id']==408733317, 'C3_PREPARE_WORKFLOW')
         args['control_run']=env['GITHUB_RUN_ID']
-    if existing_run is not None:
+    if m1_resume:
+        verify_m1_completed_prepare(api,env,existing_run)
+        worker_commit=auto.M1_FINAL_PRIVATE
+        run=existing_run
+    elif existing_run is not None:
         require((mode,source_run,existing_run)==('prepare',RESUME_SOURCE_RUN,RESUME_PRIVATE_RUN),
                 'E4F_RESUME_SCOPE')
         verify_resume_source(api,env)
@@ -461,7 +500,10 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
             0<asset['size_in_bytes']<=limit and
             (link['id'],link['repository_id'],link['head_sha'])==(run,PIN.numeric_id,worker_commit),
             'E4F_PRIVATE_ARTIFACT')
-    if existing_run is not None:
+    if m1_resume:
+        require((asset['id'],asset['digest'])==(auto.M1_FINAL_ARTIFACT,'sha256:'+auto.M1_FINAL_ARTIFACT_SHA),
+                'M1_COMPLETED_ARTIFACT_PIN')
+    elif existing_run is not None:
         artifact,sha=RESUME_PRIVATE_ARTIFACT
         require((asset['id'],asset['digest'])==(artifact,'sha256:'+sha),'E4F_RESUME_ARTIFACT_PIN')
     wire=read_archive(api,asset['id'],limit=limit)
@@ -478,6 +520,10 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
         require(data(item)==blob and set(item)=={'schema','source_run','ledger_parent','previous','record','handoff'}
                 and item['schema']==1 and item['source_run']==source_run,'E4F_PRIVATE_PROPOSAL')
         record=item['record']
+        if m1_resume:
+            require(digest(blob)==auto.M1_FINAL_PROPOSAL and digest(data(record))==auto.M1_FINAL_RECORD and
+                    item['handoff']==auto.M1_HANDOFF and item['ledger_parent']==auto.M1_ACCEPTED_LEDGER and
+                    digest(data(item['previous']))==auto.M1_PREFIX_RECORD,'M1_COMPLETED_CANDIDATE_PIN')
         if normal:
             require(record["index"]==item["previous"]["index"]+1 and
                     record["phase"] in ("accepted","staged"),"AUTO_PRIVATE_PROPOSAL")
@@ -498,7 +544,7 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
         raw=archive.read(files_[0])
     require(digest(raw)==backup['sha256'],'E4F_PRIVATE_BACKUP')
     pins=parse(BOOTSTRAP.read_bytes())
-    lab=Lab.create(Path(env['RUNNER_TEMP'])/'r18h-control-proposal')
+    lab=temporary_lab(env,'r18h-control-proposal')
     domain=public_baseline(lab,pins,normal=normal)
     ctx=domain.read()
     require(ctx['tip']==item['ledger_parent'] and ctx['latest']==item['previous'],
@@ -506,7 +552,15 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     (domain.archives/backup['file']).write_bytes(raw)
     require(domain.verify_backup(ctx,record)['recoverable'],'E4F_PRIVATE_BACKUP')
     identity=digest(data(record))
-    if existing_run is not None:
+    if m1_resume:
+        from request_executor import binding
+        require(len(ctx['records'])==9 and digest(data(ctx['records'][7]))==auto.M1_RECORD and
+                digest(data(ctx['records'][8]))==auto.M1_PREFIX_RECORD,'M1_COMPLETED_ACCEPTED_PREFIX')
+        bound=binding(ctx['recovered'],record['primary_main'])
+        require(bound is not None and (bound['request'],bound['plan'],bound['step'],bound['steps'],bound['phase'],bound['final'])==
+                (auto.M1_MARKER['request'],auto.M1_PLAN,2,2,'staged',True),'M1_COMPLETED_E4G_FINAL')
+        verify_m1_completed_prepare(api,env,existing_run)
+    elif existing_run is not None:
         verify_resume_refs(api,item,pins)
     immutable_release(env,'r18h-d3-'+identity,{'proposal.json':blob,backup['file']:raw})
     print('E4F_D3_PROPOSAL_READY',identity)
