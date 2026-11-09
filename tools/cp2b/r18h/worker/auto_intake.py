@@ -55,7 +55,7 @@ F1_NUMBER = 17
 
 
 # One authorized continuation of the exact stopped M1 operation.
-M1_NUMBER = 21
+M1_NUMBER = 22
 M1_SOURCE = 42622874725
 M1_RELAY = 42622936493
 M1_PREPARE = 42623062758
@@ -88,6 +88,11 @@ M1_SCOPE_FAILED_CODE = 'b9439d24be2e10d826cc5a41e541223e3170ec62'
 M1_SCOPE_LOG_SHA = '0bf521e823172d973920f793e72591bd78d26e6f4c5e0d2948eb6dd17ea22a7d'
 M1_SCOPE_LOG_LINE = b'2026-11-09T14:06:14.4475444Z STOP E4F_CONTROL_UNRESOLVED'
 
+M1_ACCEPTED_LEDGER = '31424621d5cccfb69f1bc4b4c83b94880113f077'
+M1_ACCEPTED_FAILED = 42635784385
+M1_ACCEPTED_FAILED_JOB = 129223450491
+M1_ACCEPTED_CODE = '55e769deea9ef81072a400080b44a2e4d07dc0a0'
+
 def m1_failed():
     """The only previous failed writer excluded for this single provider run."""
     row=public(f"/actions/runs/{M1_FAILED}/attempts/1")
@@ -110,6 +115,17 @@ def m1_failed():
     require([(j['id'],j['name']) for j in jobs if j['conclusion']=='failure']==
             [(M1_SCOPE_FAILED_JOB,'auto-intake')] and all(j['conclusion']=='skipped' for j in jobs
             if j['name'] in ('auto-assets','auto-dev')),'M1_SCOPE_PRE_CAS_JOB')
+    row=public(f"/actions/runs/{M1_ACCEPTED_FAILED}/attempts/1")
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['head_sha'],
+             row['actor']['id'],row['head_branch'],row['event'],row['display_title'],row['status'],row['conclusion'])==
+            (M1_ACCEPTED_FAILED,CONTROL_WORKFLOW,21,1,M1_ACCEPTED_CODE,DISPATCH_ACTOR,'automation-control',
+             'workflow_dispatch',f'BGZONA auto {M1_SOURCE}:{M1_RELAY}','completed','failure'),
+            'M1_ACCEPTED_FAILED_IDENTITY')
+    jobs=public(f"/actions/runs/{M1_ACCEPTED_FAILED}/attempts/1/jobs?per_page=100")['jobs']
+    require([(j['id'],j['name']) for j in jobs if j['conclusion']=='failure']==
+            [(M1_ACCEPTED_FAILED_JOB,'auto-intake')] and all(j['conclusion']=='skipped' for j in jobs
+            if j['name'] in ('auto-assets','auto-dev')),'M1_ACCEPTED_FAILED_JOB')
+
 
 
 def m1_prepared(api, item=None):
@@ -384,7 +400,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
     history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
-    require((len(hits)==1 or m1 and len(hits)==3 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED}) and
+    require((len(hits)==1 or m1 and len(hits)==4 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED}) and
             max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
@@ -393,7 +409,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
-                not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED))]
+                not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED))]
     if m1:
         require(history["total_count"]==len(history["workflow_runs"]) and
                 all(r["id"]==run or r["run_number"]<M1_NUMBER for r in history["workflow_runs"]),"M1_HISTORY")
@@ -688,6 +704,17 @@ def independent_prefix(reg,domain):
     reg.queue._accepted_view=None
     return verified_accepted_prefix(reg,domain,domain.lab.root/("cursor-"+uuid4().hex),allow_progress=True)
 
+def require_unfinished_operation(operation, context):
+    # bind() already authenticated the complete D3 progress and state signatures.
+    # pending describes a core recovery phase, not completion of the E4G plan.
+    count=len(operation.steps)
+    require(type(operation.done) is int and type(operation.pending) is bool and
+            0<count and 0<=operation.done<=count and operation.current==context["latest"] and
+            context["latest"]["phase"] in ("accepted","staged") and
+            operation.pending==(context["latest"]["phase"]=="accepted") and
+            (not operation.pending or operation.done<count),"AUTO_OPERATION_PROGRESS")
+    require(operation.done<count,"AUTO_ALREADY_ACCEPTED")
+
 def private_prepare(env):
     from queued_pipeline import prepare_registered_next, _handoff_payload
     from intake_plan import SourceEvidence, change_digest
@@ -729,7 +756,7 @@ def private_prepare(env):
             packet["before"]["ledger_record_sha256"],int(datetime.now(timezone.utc).timestamp()),"private")
         operation=RequestOperation(lab,restored,packet["before"],packet["change"],evidence,lambda _:None)
         operation.bind(context)
-        require(operation.pending,"AUTO_ALREADY_ACCEPTED")
+        require_unfinished_operation(operation,context)
         pin=gb.StandardHandoffPin(expected,packet["before"]["ledger_record_sha256"],digest(payload),len(payload))
         snapshot=reg.recovery.read(reg.provider.recovery_head())
         for _ in range(256):
@@ -850,12 +877,15 @@ def main(env):
         print("F1_PREPARED_D3_FINAL_VERIFIED",commit,F1_RECORD)
         return
     if phase=="intake" and int(env["GITHUB_RUN_NUMBER"])==M1_NUMBER and (params["source_run"],params["relay_run"])==(str(M1_SOURCE),str(M1_RELAY)):
-        api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
-        item=m1_prepared(api)
-        ledger=GitHubLedgerAppend(env["GH_TOKEN"],control.attach_guard(env,c3=True))
-        status,commit=ledger.append_reserved(item,env["GITHUB_WORKFLOW_SHA"])
-        require(status in ("APPENDED","OBSERVED") and gb.oid(commit),"M1_RESERVED_D3_READBACK")
-        print("M1_RESERVED_D3_VERIFIED",commit,M1_RECORD,flush=True)
+        # The original candidate was already accepted. This is GET-only admission,
+        # never append_reserved, another reservation, or another CAS for record 7.
+        head=public('/git/ref/heads/automation-ledger')
+        require(head['object']['sha']==M1_ACCEPTED_LEDGER,'M1_ACCEPTED_PREFIX_MOVED')
+        item=standard.proposal(M1_RECORD,normal=True)
+        require(digest(data(item))==M1_PROPOSAL and item['source_run']==M1_SOURCE and
+                item['record']['index']==7 and item['record']['phase']=='accepted',
+                'M1_ACCEPTED_PREFIX_IDENTITY')
+        print('M1_ACCEPTED_PREFIX_OBSERVED',M1_ACCEPTED_LEDGER,M1_RECORD,flush=True)
     if phase=="intake":
         api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
         if fast_idle(api,pins):
@@ -1001,6 +1031,10 @@ def fast_idle(api,pins):
     require(ref["ref"]==standard.SOURCE_REF and ref["object"]["type"]=="commit" and
             gb.oid(ref["object"]["sha"]),"AUTO_SOURCE_REF")
     if ref["object"]["sha"]!=source["head_sha"]:
+        return False
+    if record["phase"]=="accepted":
+        # A verified pending record is not yet materialized in Assets. This hint
+        # grants nothing: the caller must perform full D3/backup/E4G recovery.
         return False
     status,commit=github("/repos/"+ASSETS+"/git/commits/"+record["primary_main"])
     require(status==200 and commit["sha"]==record["primary_main"],"AUTO_HINT_AUTHORITY")
