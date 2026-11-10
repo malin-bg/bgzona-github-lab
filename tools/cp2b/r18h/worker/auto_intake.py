@@ -394,6 +394,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     if m1:
         require(row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"M1_CONTROL_OWNER")
         m1_failed()
+    p4=title==P4_TITLE
     recovering = title.startswith("BGZONA auto-resume ")
     f1 = title.startswith(F1_PREFIX)
     require(title.startswith("BGZONA auto ") or recovering or f1, "AUTO_RELAY_LINK")
@@ -402,10 +403,9 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"F1_CONTROL_SCOPE")
         f1_failed(private_api)
     if recovering:
-        require(title == RECOVERY_TITLE and row["run_number"] == RECOVERY_NUMBER and
-                row.get("triggering_actor", row["actor"])["id"] == DISPATCH_ACTOR,
-                "AUTO_RECOVERY_SCOPE")
-        recovery_failed()
+        require(title == (P4_TITLE if p4 else RECOVERY_TITLE) and row["run_number"] == (P4_NUMBER if p4 else RECOVERY_NUMBER) and
+                row.get("triggering_actor", row["actor"])["id"] == DISPATCH_ACTOR,"AUTO_RECOVERY_SCOPE")
+        p4_failed() if p4 else recovery_failed()
     parts = title[len(F1_PREFIX) if f1 else (len("BGZONA auto-resume ") if recovering else 12):].split(":")
     require(len(parts) == 2, "AUTO_RELAY_LINK")
     linked_source, linked_relay = (push_relay.number(v) for v in parts)
@@ -413,7 +413,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             (relay is None or relay == linked_relay), "AUTO_RELAY_LINK")
     if private_api is not None:
         verified = push_relay.verify(private_api, linked_source, linked_relay,
-                                     M1_PRIVATE if m1 else (F1_ORIGIN_MAIN if f1 else (RECOVERY_RELAY_MAIN if recovering else private_main)),
+                                     M1_PRIVATE if m1 else (F1_ORIGIN_MAIN if f1 else (P4_ORIGIN_MAIN if p4 else (RECOVERY_RELAY_MAIN if recovering else private_main))),
                                      completed_recovery=(recovering or f1 or m1))
         row = row | {"source_sha": verified["head_sha"]}
     else:
@@ -433,7 +433,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
-                not (recovering and r["id"] == RECOVERY_FAILED) and
+                not (recovering and r["id"] == (P4_FAILED if p4 else RECOVERY_FAILED)) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
                 not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
     if m1:
@@ -446,11 +446,11 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 all(r["id"]==run or r["run_number"]<F1_NUMBER for r in history["workflow_runs"]),
                 "F1_CONTROL_HISTORY")
     if recovering:
-        failed = [r for r in history["workflow_runs"] if r["id"] == RECOVERY_FAILED]
-        require(history["total_count"] == len(history["workflow_runs"]) == RECOVERY_NUMBER and
+        failed = [r for r in history["workflow_runs"] if r["id"] == (P4_FAILED if p4 else RECOVERY_FAILED)]
+        require(history["total_count"] == len(history["workflow_runs"]) == (P4_NUMBER if p4 else RECOVERY_NUMBER) and
                 len(failed) == 1 and failed[0]["conclusion"] == "failure" and
                 failed[0]["run_attempt"] == 1 and
-                all(r["id"] == run or r["run_number"] < RECOVERY_NUMBER
+                all(r["id"] == run or r["run_number"] < (P4_NUMBER if p4 else RECOVERY_NUMBER)
                     for r in history["workflow_runs"]), "AUTO_RECOVERY_HISTORY")
     require(previous or history["total_count"] == len(history["workflow_runs"]),
             "AUTO_HISTORY_WINDOW")
@@ -498,12 +498,12 @@ def context(env):
     recovering = params["mode"] == "auto-resume"
     f1 = params["mode"]=="f1-resume"
     require(not f1 or (source,relay)==(42525151296,42528043016),"F1_CONTROL_INPUT")
-    require(not recovering or (source, relay) == (push_relay.CATCHUP_RUN, RECOVERY_RELAY),
+    require(not recovering or (source, relay) in ((push_relay.CATCHUP_RUN, RECOVERY_RELAY),(P4_SOURCE,P4_RELAY)),
             "AUTO_RECOVERY_SCOPE")
     phase = 'prod' if env.get('GITHUB_JOB')=='auto-prod' else env['AUTO_PHASE']
     require(phase!='prod' or env['AUTO_PHASE']=='dev','PROD_READ_ROLE')
     require(phase in ("intake","assets","dev","prod") and
-            env["GITHUB_JOB"] == "auto-" + phase, "AUTO_JOB")
+            (env["GITHUB_JOB"] == "auto-" + phase or phase=="intake" and env["GITHUB_JOB"]=="auto-continue"), "AUTO_JOB")
     api = proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"]) if phase == "intake" else None
     row=control_run(int(env["GITHUB_RUN_ID"]), source, relay, private_api=api,
                     private_main=env.get("PRIVATE_WORKFLOW_COMMIT"))
@@ -513,7 +513,7 @@ def context(env):
     if f1 and phase=="intake":
         f1_initial(api,env["PRIVATE_WORKFLOW_COMMIT"])
     if recovering and phase == "intake":
-        recovery_initial(api, env["PRIVATE_WORKFLOW_COMMIT"])
+        (p4_initial if (source,relay)==(P4_SOURCE,P4_RELAY) else recovery_initial)(api, env["PRIVATE_WORKFLOW_COMMIT"])
     return params | ({"source_sha":row["source_sha"]} if phase == "intake" else {})
 
 
@@ -905,7 +905,7 @@ def main(env):
     phase='prod' if env.get('GITHUB_JOB')=='auto-prod' else env['AUTO_PHASE']
     pins=parse(standard.BOOTSTRAP.read_bytes())
     if phase=='prod':
-        require(params['mode']=='auto','PROD_AUTO_MODE')
+        require(params['mode']=='auto' or params['mode']=='auto-resume' and (params['source_run'],params['relay_run'])==(str(P4_SOURCE),str(P4_RELAY)),'PROD_AUTO_MODE')
         jobs=public(f"/actions/runs/{env['GITHUB_RUN_ID']}/attempts/1/jobs?per_page=100")['jobs']
         done=[j for j in jobs if j['name']=='auto-dev']
         require(len(done)==1 and done[0]['status']=='completed' and done[0]['conclusion']=='success','PROD_DEV_JOB_REQUIRED')
@@ -951,55 +951,7 @@ def main(env):
         print('M1_FINAL_D3_VERIFIED',commit,M1_FINAL_RECORD,flush=True)
         return
     if phase=="intake":
-        api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
-        if fast_idle(api,pins):
-            with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f: f.write("work=false\n")
-            print("AUTO_IDLE")
-            return
-        domain=standard.public_baseline(Lab.create(Path(env["RUNNER_TEMP"])/"auto-discovery"),pins,normal=True)
-        state=domain.read(); latest=state["latest"]
-        item=standard.proposal(digest(data(latest)),normal=True)
-        last_run=item["source_run"]
-        previous,_=api.get(f"/actions/runs/{last_run}/attempts/1")
-        run_identity(api,last_run,previous["head_sha"])
-        bound=binding(state["recovered"],latest["primary_main"])
-        require(bound is not None,"AUTO_ACCEPTED_REQUEST")
-        if bound["final"]:
-            require(bound["phase"]=="staged","AUTO_FINAL_REQUIRED")
-            control.ensure_current_public(env,item)
-            work=next_source(api,previous["head_sha"],known=params["source_sha"])
-            if work is None or work=="WAIT":
-                with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f: f.write("work=false\n")
-                print("AUTO_IDLE" if work is None else "AUTO_SOURCE_PENDING")
-                return
-            run=work["run"]
-        else:
-            run=last_run
-        require(params["mode"] != "auto-resume" or
-                (run, params["source_sha"]) == (push_relay.CATCHUP_RUN, push_relay.CATCHUP_SOURCE),
-                "AUTO_RECOVERY_SOURCE")
-        # A whole accepted operation may need multiple pre-existing E4G core steps.
-        # Every step retains its own PRIVATE fence and independent D3 CAS.
-        from intake_plan import MAX_STEPS
-        for _ in range(MAX_STEPS*2):
-            item=control.private_candidate(env,"prepare",run,None,normal=True)
-            key=digest(data(item["record"]))
-            require(standard.proposal(key,normal=True)==item,"AUTO_PROPOSAL_READBACK")
-            ledger=GitHubLedgerAppend(env["GH_TOKEN"],control.attach_guard(env,c3=True))
-            status,commit=ledger.append(item["ledger_parent"],item["previous"],item["record"])
-            require(status in ("APPENDED","OBSERVED") and gb.oid(commit),"AUTO_D3_READBACK")
-            temp=Path(env["RUNNER_TEMP"])/("auto-accepted-"+uuid4().hex)
-            verified=standard.public_baseline(Lab.create(temp),pins,normal=True).read()
-            require(verified["latest"]==item["record"],"AUTO_ACCEPTANCE_MOVED")
-            bound=binding(verified["recovered"],item["record"]["primary_main"])
-            require(bound is not None,"AUTO_ACCEPTED_REQUEST")
-            if bound["final"]:
-                require(bound["phase"]=="staged","AUTO_FINAL_REQUIRED")
-                with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f:
-                    f.write("record="+key+"\nwork=true\n")
-                print("AUTO_D3_FINAL_VERIFIED",commit,key)
-                return
-        raise ProviderStop("AUTO_STEP_LIMIT")
+        return one_transition(env,params,pins,control)
     require(phase in ("assets","dev"),"AUTO_PHASE")
     key=env["AUTO_RECORD"]; item=standard.proposal(key,normal=True)
     if phase=="assets":
@@ -1128,3 +1080,131 @@ def fast_idle(api,pins):
             0<bound["step"]<=__import__("intake_plan").MAX_STEPS,"AUTO_HINT_BINDING")
     require(public("/git/ref/"+LEDGER.removeprefix("refs/"))==head,"AUTO_HINT_MOVED")
     return True
+
+
+# One explicitly authorized resume through the EXISTING auto-resume route.
+P4_SOURCE=42852332535
+P4_RELAY=42852410172
+P4_FAILED=42852470524
+P4_NUMBER=29
+P4_SOURCE_SHA='e7b49d75fdd2028f9dc32ea1ce8a44f6e9fd9d54'
+P4_ORIGIN_MAIN='85f370875021e1b0dfd9315be63f4051b48d754f'
+P4_PREFIX='b7652c20c5a8d7e860b202cf6eff5c39cde7f73b'
+P4_RECORD10='8ea71306c8b1b453e82ee76b6ca8841875f8df9a2d4fb72f6d7daf2472e1f027'
+P4_RECORD11='ff57a94b7a5a3783cd04e882e530a74fe28bf475e0d5093a07fecbe170c4483c'
+P4_PLAN='500cd87b87dea7f42a00feba0b3a262ce17d33a0d42c17a2c5c82ceb4cd9b00e'
+P4_REQUEST='d0b37815f642a21462a9798d91dda5dbd33908873eb44eca3187250bf3e9d534'
+P4_PRIVATE_RUN=42854560488
+P4_ARTIFACT=13782816500
+P4_ARTIFACT_SHA='7a1057dc036e2d4be26383191f3312cb6df69cc034a7cc22a8cbefc9eae194de'
+P4_PROPOSAL='ddb075e4e7f2b0233b062f96c08522eabfda3aad53390fb48a4d9b8ec0e8dd76'
+P4_RECOVERY='6d8b0f62fb0ab55ce141227b3bc4fab327dd7065'
+P4_TITLE=f'BGZONA auto-resume {P4_SOURCE}:{P4_RELAY}'
+P4_HANDOFF_PATH='private-recovery/c6ea2e1f9470fb7f3afadd40b5400f53e1b322ac676112d45787883bf0e9967f/784ebec1eb9efb673b890118eead1849f44ac07e21caf00bfba590ebb5006271/checkpoint.json'
+P4_HANDOFF_SHA='3b318e55ce0aa63f66f364f860a3590671011347230621ef0b48250c9cb3773d'
+
+
+def p4_failed():
+    row=public(f'/actions/runs/{P4_FAILED}/attempts/1')
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['head_sha'],row['event'],
+             row['head_branch'],row['repository']['id'],row['actor']['id'],row['status'],row['conclusion'],row['display_title'])==
+            (P4_FAILED,CONTROL_WORKFLOW,28,1,'9aa8a7816e142f8e2b59cda0e571638ec7b4bc48','workflow_dispatch',
+             'automation-control',CONTROL_ID,DISPATCH_ACTOR,'completed','failure',f'BGZONA auto {P4_SOURCE}:{P4_RELAY}'),
+            'P4_FAILED_IDENTITY')
+    jobs=public(f'/actions/runs/{P4_FAILED}/attempts/1/jobs?per_page=100')
+    require(jobs['total_count']==len(jobs['jobs']) and all(j['status']=='completed' and
+            j['conclusion']==('failure' if j['name']=='auto-intake' else 'skipped') for j in jobs['jobs']) and
+            sum(j['name']=='auto-intake' for j in jobs['jobs'])==1,'P4_FAILED_OPERATIONS')
+    prefix=public('/git/commits/'+P4_PREFIX)
+    require(prefix['sha']==P4_PREFIX and [p['sha'] for p in prefix['parents']]==['41e23ec98e76d285b89ade29879759fd89da6145'],
+            'P4_PREFIX_ANCESTRY')
+
+
+def p4_initial(api,main):
+    from registration_entry import pinned_file
+    require(gb.oid(main),'P4_WORKFLOW_PIN')
+    run_identity(api,P4_SOURCE,P4_SOURCE_SHA)
+    ref,_=api.get('/git/ref/heads/cp2b-private-standard-source-r1')
+    require(ref['object']['sha']==P4_SOURCE_SHA,'P4_SOURCE_MOVED')
+    meta,_=api.get('/contents/'+P4_HANDOFF_PATH+'?ref='+P4_RECOVERY)
+    require((meta['path'],meta['type'],meta['size'])==(P4_HANDOFF_PATH,'file',1_487_224) and
+            gb.oid(meta['sha']),'P4_HANDOFF_OBJECT')
+    blob,_=api.get('/git/blobs/'+meta['sha'])
+    require((blob['sha'],blob['encoding'],blob['size'])==(meta['sha'],'base64',1_487_224),
+            'P4_HANDOFF_OBJECT')
+    packet=__import__('base64').b64decode(''.join(blob['content'].splitlines()),validate=True)
+    require(len(packet)==1_487_224 and
+            __import__('hashlib').sha1(b'blob '+str(len(packet)).encode()+b'\0'+packet).hexdigest()==meta['sha'] and
+            digest(packet)==P4_HANDOFF_SHA,'P4_HANDOFF_PIN')
+    # These immutable original bytes plus D3 are authority; runtime files are hints.
+    status,row=github('/repos/'+CONTROL+'/contents/records/00000010.json?ref='+P4_PREFIX,
+                      standard.lab_read_token())
+    require(status==200 and row['encoding']=='base64','P4_PREFIX_RECORD')
+    raw=__import__('base64').b64decode(''.join(row['content'].splitlines()),validate=True)
+    require(digest(raw)==P4_RECORD10,'P4_PREFIX_RECORD')
+
+
+def transition_outputs(env, item, bound, active_run, remaining):
+    require(type(remaining) is int and 0<=remaining<256 and
+            bound['final']==(remaining==0) and (not bound['final'] or bound['phase']=='staged'),
+            'AUTO_EXECUTION_REMAINING')
+    result=dict(record=digest(data(item['record'])),work='true' if bound['final'] else 'false',
+                pending='false' if bound['final'] else 'true',remaining=str(remaining),
+                slots=__import__('json').dumps(list(range((remaining+1)//2)),separators=(',',':')),
+                active_source_run=str(active_run))
+    with open(env['GITHUB_OUTPUT'],'a',encoding='ascii') as f:
+        for key,val in result.items():f.write(key+'='+val+'\n')
+    print('AUTO_TRANSITION_CHECKPOINT',data(dict(index=item['record']['index'],phase=bound['phase'],
+          step=bound['step'],steps=bound['steps'],final=bound['final'],remaining=remaining)).decode(),flush=True)
+
+
+def one_transition(env,params,pins,control):
+    from request_executor import binding
+    from e4f_github import GitHubLedgerAppend
+    api=proof.GitHub(env['PRIVATE_ACTIONS_TOKEN'])
+    domain=standard.public_baseline(Lab.create(Path(env['RUNNER_TEMP'])/('auto-discovery-'+uuid4().hex)),pins,normal=True)
+    state=domain.read();latest=state['latest'];bound=binding(state['recovered'],latest['primary_main'])
+    require(bound is not None,'AUTO_ACCEPTED_REQUEST')
+    item=standard.proposal(digest(data(latest)),normal=True);last_run=item['source_run']
+    active=env.get('ACTIVE_SOURCE_RUN','');continuing=env.get('AUTO_CONTINUATION')=='true'
+    p4=params['mode']=='auto-resume' and (params['source_run'],params['relay_run'])==(str(P4_SOURCE),str(P4_RELAY))
+    if continuing:
+        require(active.isdigit() and int(active)==last_run,'AUTO_CONTINUATION_SOURCE')
+        run=last_run
+        if bound['final']:
+            transition_outputs(env,item,bound,run,0);return
+    elif p4:
+        require(last_run==P4_SOURCE and latest['index']==10 and digest(data(latest))==P4_RECORD10 and
+                state['tip']==P4_PREFIX and (bound['request'],bound['plan'],bound['step'],bound['steps'],bound['phase'],bound['final'])==
+                (P4_REQUEST,P4_PLAN,1,2,'staged',False),'P4_INITIAL_PREFIX')
+        recovery,_=api.get('/git/ref/heads/cp2b-private-standard-recovery-c2')
+        require(recovery['object']['sha']==P4_RECOVERY,'P4_INITIAL_RECOVERY');run=P4_SOURCE
+    else:
+        require(params['mode']=='auto' and bound['final'] and bound['phase']=='staged','AUTO_FINAL_REQUIRED')
+        previous,_=api.get(f'/actions/runs/{last_run}/attempts/1');run_identity(api,last_run,previous['head_sha'])
+        control.ensure_current_public(env,item)
+        work=next_source(api,previous['head_sha'],known=params['source_sha'])
+        if work is None or work=='WAIT':
+            with open(env['GITHUB_OUTPUT'],'a',encoding='ascii') as f:f.write('work=false\npending=false\nslots=[]\n')
+            print('AUTO_IDLE' if work is None else 'AUTO_SOURCE_PENDING',flush=True);return
+        run=work['run']
+    if p4 and latest['index']==10:
+        item=control.private_candidate(env,'prepare',run,None,existing_run=P4_PRIVATE_RUN,normal=True)
+        remaining=1  # exact verified original #11 accepted -> only final staged remains
+    else:
+        item=control.private_candidate(env,'prepare',run,None,normal=True)
+        require('execution' in item,'AUTO_EXECUTION_HINT_REQUIRED');remaining=item['execution']['remaining']
+    key=digest(data(item['record']))
+    require(standard.proposal(key,normal=True)==item,'AUTO_PROPOSAL_READBACK')
+    ledger=GitHubLedgerAppend(env['GH_TOKEN'],control.attach_guard(env,c3=True))
+    outcome,commit=ledger.append(item['ledger_parent'],item['previous'],item['record'])
+    require(outcome in ('APPENDED','OBSERVED') and gb.oid(commit),'AUTO_D3_READBACK')
+    verified=standard.public_baseline(Lab.create(Path(env['RUNNER_TEMP'])/('auto-accepted-'+uuid4().hex)),pins,normal=True).read();require(verified['latest']==item['record'],'AUTO_ACCEPTANCE_MOVED')
+    bound=binding(verified['recovered'],item['record']['primary_main']);require(bound is not None,'AUTO_ACCEPTED_REQUEST')
+    if p4:
+        require(digest(data(verified['records'][10]))==P4_RECORD10 and
+                digest(data(verified['records'][11]))==P4_RECORD11 and
+                (bound['request'],bound['plan'],bound['step'],bound['steps'])==(P4_REQUEST,P4_PLAN,2,2),
+                'P4_ACCEPTED_PREFIX')
+    transition_outputs(env,item,bound,run,remaining)
+

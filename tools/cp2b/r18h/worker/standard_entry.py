@@ -310,10 +310,46 @@ def lab_read_token():
     return None
 
 
-def public_release(tag):
+def backup_releases(records):
+    """Bounded, fresh bulk metadata reads. No byte cache or prior acceptance."""
+    from e4f_github import CONTROL
+    tags=set()
+    for record in records:
+        backup=record['backup'];identity=backup['sha256']
+        require(gb.sha(identity) and backup['file']==identity+'.bundle','STANDARD_BACKUP_PIN')
+        tags.add('r18h-d2-'+identity if record['index']==0 else 'r18h-d3-'+digest(data(record)))
+    require(1<=len(tags)<=256,'STANDARD_LEDGER_HISTORY')
+    selected={}
+    # A finite 16-GET metadata budget covers the 256-record contract plus
+    # projection and historical releases. Missing evidence always stops.
+    for page in range(1,17):
+        status,rows=github('/repos/'+CONTROL+f'/releases?per_page=100&page={page}',lab_read_token())
+        require(status==200 and type(rows) is list and len(rows)<=100,'STANDARD_BACKUP_LIST')
+        for row in rows:
+            require(type(row) is dict,'STANDARD_BACKUP_LIST')
+            tag=row.get('tag_name')
+            if tag not in tags:continue
+            require(tag not in selected or selected[tag]==row,'STANDARD_BACKUP_LIST_CONFLICT')
+            selected[tag]=row
+        if set(selected)==tags:return selected
+        if len(rows)<100 or page==16:
+            # Reuse the original strict tag reader for at most the two newly
+            # published transitions of this bounded job, not an unbounded retry.
+            missing=tags-set(selected)
+            require(len(missing)<=2,'STANDARD_BACKUP_LIST_LIMIT' if page==16 else 'STANDARD_BACKUP_LIST_MISSING')
+            for tag in sorted(missing):selected[tag]=public_release(tag)
+            return selected
+    raise ProviderStop('STANDARD_BACKUP_LIST_LIMIT')
+
+
+def public_release(tag, *, metadata=None):
     from e4f_github import CONTROL
     require(any(tag.startswith(prefix) and gb.sha(tag[len(prefix):]) for prefix in ('r18h-d2-','r18h-d3-','r18h-dev-')),'STANDARD_BACKUP_TAG')
-    status, release=github('/repos/'+CONTROL+'/releases/tags/'+tag,lab_read_token())
+    if metadata is None:
+        status, release=github('/repos/'+CONTROL+'/releases/tags/'+tag,lab_read_token())
+    else:
+        require(type(metadata) is dict and tag in metadata,'STANDARD_BACKUP_LIST_MISSING')
+        status,release=200,metadata[tag]
     obj=release if type(release) is dict else {}
     checks=dict(http_200=status==200,object=type(release) is dict,
                 tag_matches=obj.get('tag_name')==tag,draft_false=obj.get('draft') is False,
@@ -402,6 +438,7 @@ def public_baseline(lab, pins, *, extra=None, normal=False):
         require(extra['index']==len(rows) and extra['previous']==digest(data(rows[-1])),
                 'STANDARD_BACKUP_PREDECESSOR')
         rows.append(extra)
+    metadata=backup_releases(rows)
     directory=lab.root/'independent-archives'
     directory.mkdir()
     for record in rows:
@@ -409,7 +446,7 @@ def public_baseline(lab, pins, *, extra=None, normal=False):
         identity=backup['sha256']
         require(gb.sha(identity) and backup['file']==identity+'.bundle','STANDARD_BACKUP_PIN')
         tag='r18h-d2-'+identity if record['index']==0 else 'r18h-d3-'+digest(data(record))
-        release=public_release(tag)
+        release=public_release(tag,metadata=metadata)
         allowed={backup['file']} if record['index']==0 else {backup['file'],'proposal.json'}
         require(set(a['name'] for a in release['assets'])==allowed and
                 len(release['assets'])==len(allowed),'STANDARD_BACKUP_ASSET')
@@ -449,7 +486,8 @@ def proposal(record_sha, *, c3=False, normal=False):
     require(len(named)==1 and len(assets)==2,'STANDARD_PROPOSAL_ASSET')
     raw=public_asset(release,'proposal.json',named[0]['size'],32_000)
     obj=parse(raw)
-    require(data(obj)==raw and set(obj)=={'schema','source_run','ledger_parent','previous','record','handoff'}
+    require(data(obj)==raw and set(obj) in ({'schema','source_run','ledger_parent','previous','record','handoff'},
+            {'schema','source_run','ledger_parent','previous','record','handoff','execution'})
             and obj['schema']==1 and gb.positive(obj['source_run']) and gb.oid(obj['ledger_parent']) and
             digest(data(obj['record']))==record_sha and (type(obj['record']['index']) is int and obj['record']['index']>=3 if normal else obj['record']['index'] in ((3,) if c3 else (1,2))),
             'STANDARD_PROPOSAL')
@@ -616,6 +654,9 @@ def produce_candidate(domain, operation, context, witness, run, handoff, out):
     out.mkdir()
     item={'schema':1,'source_run':run,'ledger_parent':context['tip'],
           'previous':previous,'record':record,'handoff':handoff}
+    if isinstance(operation,__import__('request_executor').RequestOperation):
+        from e4f_github import execution_hint
+        item['execution']=execution_hint(operation,previous,record)
     (out/'proposal.json').write_bytes(data(item))
     (out/record['backup']['file']).write_bytes((domain.archives/record['backup']['file']).read_bytes())
     return item

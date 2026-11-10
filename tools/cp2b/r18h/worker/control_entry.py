@@ -440,6 +440,7 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     worker_commit=env['PRIVATE_WORKFLOW_COMMIT']
     import auto_intake as auto
     m1_resume=normal and (mode,source_run,existing_run)==('prepare',auto.M1_SOURCE,auto.M1_FINAL_PREPARE)
+    p4_resume=normal and (mode,source_run,existing_run)==('prepare',auto.P4_SOURCE,auto.P4_PRIVATE_RUN)
     private_path='.github/workflows/e4f-standard-'+mode+'.yml'
     path='/actions/workflows/'+private_path.rsplit('/',1)[1]
     wf,_=api.get(path)
@@ -447,12 +448,15 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
             gb.positive(wf['id']),'E4F_PRIVATE_PREPARE_PIN')
     args={'source_run':str(source_run)} if mode=='prepare' else {'previous_record':previous}
     if normal:
-        require(mode=="prepare" and (existing_run is None or m1_resume) and wf["id"]==408733317,"AUTO_PREPARE_WORKFLOW")
+        require(mode=="prepare" and (existing_run is None or m1_resume or p4_resume) and wf["id"]==408733317,"AUTO_PREPARE_WORKFLOW")
         args.update(route="auto",control_run=env["GITHUB_RUN_ID"])
     if c3:
         require(mode=='prepare' and existing_run is None and wf['id']==408733317, 'C3_PREPARE_WORKFLOW')
         args['control_run']=env['GITHUB_RUN_ID']
-    if m1_resume:
+    if p4_resume:
+        verify_p4_completed(api,env,existing_run)
+        worker_commit=auto.P4_ORIGIN_MAIN;run=existing_run
+    elif m1_resume:
         verify_m1_completed_prepare(api,env,existing_run)
         worker_commit=auto.M1_FINAL_PRIVATE
         run=existing_run
@@ -467,28 +471,21 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
                            {'ref':'main','inputs':args,'return_run_details':True})
         require(status==200 and gb.positive(resp['workflow_run_id']),'E4F_PRIVATE_DISPATCH_UNRESOLVED')
         run=resp['workflow_run_id']
-    end=time.monotonic()+360
+    from e4f_github import wait_actions_run,PRIVATE_JOB_SECONDS
     title='R18H '+mode+' '+next(iter(args.values()))
-    while True:
-        try:
-            row,_=api.get(f'/actions/runs/{run}/attempts/1')
+    def read_run():
+        try:return 200,api.get(f'/actions/runs/{run}/attempts/1')[0]
         except OSError as exc:
-            if getattr(exc,'code',None)!=404 or time.monotonic()>=end:
-                raise ProviderStop('E4F_PRIVATE_RUN_UNRESOLVED') from None
-            time.sleep(3)
-            continue
-        require(row['id']==run,'E4F_PRIVATE_RUN_PIN')
-        if row['status']=='completed':
-            require((row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
-                     row['head_branch'],row['repository']['id'],row['actor']['id'],
-                     row['path'].split('@',1)[0],row['display_title'])==
-                    (1,wf['id'],'workflow_dispatch',worker_commit,'main',PIN.numeric_id,
-                     int(env['PRIVATE_DISPATCH_ACTOR']),private_path,title),'E4F_PRIVATE_RUN_PIN')
-            require(row['conclusion']=='success','E4F_PRIVATE_PREPARE_STOP')
-            break
-        # A run ID alone grants no trust. Allow only bounded GETs until final metadata.
-        require(existing_run is None and time.monotonic()<end,'E4F_PRIVATE_RUN_UNRESOLVED')
-        time.sleep(3)
+            code=getattr(exc,'code',None)
+            if code is not None:return code,None
+            raise
+    row=wait_actions_run(read_run,run,'E4F_PRIVATE_RUN',PRIVATE_JOB_SECONDS)
+    require((row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
+             row['head_branch'],row['repository']['id'],row['actor']['id'],
+             row['path'].split('@',1)[0],row['display_title'])==
+            (1,wf['id'],'workflow_dispatch',worker_commit,'main',PIN.numeric_id,
+             int(env['PRIVATE_DISPATCH_ACTOR']),private_path,title),'E4F_PRIVATE_RUN_PIN')
+    require(row['conclusion']=='success','E4F_PRIVATE_PREPARE_STOP')
     jobs,_=api.get(f'/actions/runs/{run}/attempts/1/jobs')
     require(jobs['total_count']==len(jobs['jobs'])==1 and
             (jobs['jobs'][0]['name'],jobs['jobs'][0]['conclusion'])==('prepare','success'),
@@ -503,7 +500,9 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
             0<asset['size_in_bytes']<=limit and
             (link['id'],link['repository_id'],link['head_sha'])==(run,PIN.numeric_id,worker_commit),
             'E4F_PRIVATE_ARTIFACT')
-    if m1_resume:
+    if p4_resume:
+        require((asset['id'],asset['digest'])==(auto.P4_ARTIFACT,'sha256:'+auto.P4_ARTIFACT_SHA),'P4_COMPLETED_ARTIFACT_PIN')
+    elif m1_resume:
         require((asset['id'],asset['digest'])==(auto.M1_FINAL_ARTIFACT,'sha256:'+auto.M1_FINAL_ARTIFACT_SHA),
                 'M1_COMPLETED_ARTIFACT_PIN')
     elif existing_run is not None:
@@ -520,10 +519,14 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
         require(len(manifest)==1 and manifest[0].file_size<=32_000,'E4F_PRIVATE_ARTIFACT_SHAPE')
         blob=archive.read(manifest[0])
         item=parse(blob)
-        require(data(item)==blob and set(item)=={'schema','source_run','ledger_parent','previous','record','handoff'}
+        require(data(item)==blob and set(item) in ({'schema','source_run','ledger_parent','previous','record','handoff'},
+                    {'schema','source_run','ledger_parent','previous','record','handoff','execution'})
                 and item['schema']==1 and item['source_run']==source_run,'E4F_PRIVATE_PROPOSAL')
         record=item['record']
-        if m1_resume:
+        if p4_resume:
+            require(digest(blob)==auto.P4_PROPOSAL and digest(data(record))==auto.P4_RECORD11 and
+                    item['ledger_parent']==auto.P4_PREFIX and digest(data(item['previous']))==auto.P4_RECORD10,'P4_COMPLETED_CANDIDATE_PIN')
+        elif m1_resume:
             require(digest(blob)==auto.M1_FINAL_PROPOSAL and digest(data(record))==auto.M1_FINAL_RECORD and
                     item['handoff']==auto.M1_HANDOFF and item['ledger_parent']==auto.M1_ACCEPTED_LEDGER and
                     digest(data(item['previous']))==auto.M1_PREFIX_RECORD,'M1_COMPLETED_CANDIDATE_PIN')
@@ -555,7 +558,21 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
     (domain.archives/backup['file']).write_bytes(raw)
     require(domain.verify_backup(ctx,record)['recoverable'],'E4F_PRIVATE_BACKUP')
     identity=digest(data(record))
-    if m1_resume:
+    if 'execution' in item:
+        from request_executor import binding
+        bound=binding(ctx['recovered'],record['primary_main']);hint=item['execution']
+        require(set(hint)=={'schema','request','plan','steps','transitions','remaining'} and hint['schema']==1 and
+                (hint['request'],hint['plan'],hint['steps'])==(bound['request'],bound['plan'],bound['steps']) and
+                type(hint['remaining']) is int and type(hint['transitions']) is int and
+                bound['steps']<=hint['transitions']<=2*bound['steps'] and
+                0<=hint['remaining']<hint['transitions'] and bound['final']==(hint['remaining']==0) and
+                record['index']+hint['remaining']<=255,'AUTO_EXECUTION_HINT')
+    if p4_resume:
+        from request_executor import binding
+        bound=binding(ctx['recovered'],record['primary_main'])
+        require((bound['request'],bound['plan'],bound['step'],bound['steps'],bound['phase'],bound['final'])==
+                (auto.P4_REQUEST,auto.P4_PLAN,2,2,'accepted',False),'P4_COMPLETED_E4G_PIN')
+    elif m1_resume:
         from request_executor import binding
         require(len(ctx['records'])==9 and digest(data(ctx['records'][7]))==auto.M1_RECORD and
                 digest(data(ctx['records'][8]))==auto.M1_PREFIX_RECORD,'M1_COMPLETED_ACCEPTED_PREFIX')
@@ -645,25 +662,20 @@ def c3_dispatch_dev(env, trust):
             'C3_DEV_DISPATCH_UNRESOLVED')
     run=row['workflow_run_id']
     print('C3_DEV_RUN',run,cid,flush=True)
-    deadline=time.monotonic()+660
-    while time.monotonic()<deadline:
-        status,r=github(root+f'/actions/runs/{run}',token)
-        require(status in (200,404),'C3_DEV_RUN_UNRESOLVED')
-        if status==200 and r['status']=='completed':
-            require((r['id'],r['workflow_id'],r['run_attempt'],r['repository']['id'],r['head_branch'],
-                     r['head_sha'],r['actor']['id'],r['event'],r['display_title'],r['conclusion'])==
-                    (run,232539432,1,1149689018,'main',dev_sha,353092585,'workflow_dispatch','DEV '+cid,
-                     'success'),'C3_DEV_RUN_RESULT')
-            status,j=github(root+f'/actions/runs/{run}/attempts/1/jobs',token)
-            require(status==200 and {x['name']:x['conclusion'] for x in j['jobs']}==
-                    {'build':'success','deploy':'success'} and any(
-                        step['name']=='Verify public DEV CID, page and OG against the seal' and
-                        step['conclusion']=='success' for x in j['jobs'] if x['name']=='deploy'
-                        for step in x['steps']), 'C3_DEV_PUBLIC_READBACK')
-            print('C3_PUBLIC_DEV_VERIFIED',cid,run,flush=True)
-            return
-        time.sleep(8)
-    raise ProviderStop('C3_DEV_RUN_UNRESOLVED')
+    from e4f_github import wait_actions_run
+    r=wait_actions_run(lambda:github(root+f'/actions/runs/{run}',token),run,'C3_DEV_RUN',25*60)
+    require((r['id'],r['workflow_id'],r['run_attempt'],r['repository']['id'],r['head_branch'],
+                         r['head_sha'],r['actor']['id'],r['event'],r['display_title'],r['conclusion'])==
+                        (run,232539432,1,1149689018,'main',dev_sha,353092585,'workflow_dispatch','DEV '+cid,
+                         'success'),'C3_DEV_RUN_RESULT')
+    status,j=github(root+f'/actions/runs/{run}/attempts/1/jobs',token)
+    require(status==200 and {x['name']:x['conclusion'] for x in j['jobs']}==
+                        {'build':'success','deploy':'success'} and any(
+                            step['name']=='Verify public DEV CID, page and OG against the seal' and
+                            step['conclusion']=='success' for x in j['jobs'] if x['name']=='deploy'
+                            for step in x['steps']), 'C3_DEV_PUBLIC_READBACK')
+    print('C3_PUBLIC_DEV_VERIFIED',cid,run,flush=True)
+    return
 
 
 def c3_main(env):
@@ -931,25 +943,20 @@ def dispatch_prod(env,trust, *, verify_only=False):
         require(status==200 and isinstance(reply,dict) and gb.positive(reply.get('workflow_run_id')),'PROD_DISPATCH_UNKNOWN')
         run=reply['workflow_run_id']
     print('PROD_VERIFY_ONLY_RUN' if verify_only else 'PROD_RUN',run,cid,flush=True)
-    deadline=time.monotonic()+660
-    while time.monotonic()<deadline:
-        status,row=github(root+f'/actions/runs/{run}/attempts/1',token)
-        require(status in (200,404),'PROD_RUN_UNRESOLVED')
-        if status==200 and row['status']=='completed':
-            require((row['id'],row['workflow_id'],row['run_attempt'],row['repository']['id'],row['head_branch'],row['head_sha'],
-                     row['actor']['id'],row['event'],row['display_title'],row['conclusion'])==
-                    (run,PROD_WORKFLOW,1,PROD_ID,'main',tip,353092585,'workflow_dispatch',title,'success'),'PROD_RUN_IDENTITY')
-            status,jobs=github(root+f'/actions/runs/{run}/attempts/1/jobs?per_page=100',token)
-            require(status==200 and jobs['total_count']==len(jobs['jobs'])==3 and
-                    {j['name']:j['conclusion'] for j in jobs['jobs']}==dict(build='success',deploy='skipped' if verify_only else 'success',verify='success') and
-                    any(s['name']=='Verify bound build source' and s['conclusion']=='success' for j in jobs['jobs'] if j['name']=='build' for s in j['steps']) and
-                    any(s['name']=='Verify public PROD CID and files against the seal' and s['conclusion']=='success' for j in jobs['jobs'] if j['name']=='verify' for s in j['steps']),
-                    'PROD_SEAL_READBACK')
-            require(prod_source(env,token)==tip,'PROD_SOURCE_MOVED')
-            if verify_only:require(prod_published_source(env,config)==published,'PROD_PUBLISHED_SOURCE_MOVED')
-            return run
-        time.sleep(8)
-    raise ProviderStop('PROD_RUN_UNRESOLVED')
+    from e4f_github import wait_actions_run
+    row=wait_actions_run(lambda:github(root+f'/actions/runs/{run}/attempts/1',token),run,'PROD_RUN',20*60 if verify_only else 30*60)
+    require((row['id'],row['workflow_id'],row['run_attempt'],row['repository']['id'],row['head_branch'],row['head_sha'],
+                         row['actor']['id'],row['event'],row['display_title'],row['conclusion'])==
+                        (run,PROD_WORKFLOW,1,PROD_ID,'main',tip,353092585,'workflow_dispatch',title,'success'),'PROD_RUN_IDENTITY')
+    status,jobs=github(root+f'/actions/runs/{run}/attempts/1/jobs?per_page=100',token)
+    require(status==200 and jobs['total_count']==len(jobs['jobs'])==3 and
+                        {j['name']:j['conclusion'] for j in jobs['jobs']}==dict(build='success',deploy='skipped' if verify_only else 'success',verify='success') and
+                        any(s['name']=='Verify bound build source' and s['conclusion']=='success' for j in jobs['jobs'] if j['name']=='build' for s in j['steps']) and
+                        any(s['name']=='Verify public PROD CID and files against the seal' and s['conclusion']=='success' for j in jobs['jobs'] if j['name']=='verify' for s in j['steps']),
+                        'PROD_SEAL_READBACK')
+    require(prod_source(env,token)==tip,'PROD_SOURCE_MOVED')
+    if verify_only:require(prod_published_source(env,config)==published,'PROD_PUBLISHED_SOURCE_MOVED')
+    return run
 
 def prod_main(env):
     require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_REPOSITORY']==CONTROL and env['GITHUB_REPOSITORY_ID']==str(CONTROL_ID) and
@@ -1083,6 +1090,27 @@ def ensure_current_public(env,item):
     trust,packet=prod_input(env|{'RUNNER_TEMP':str(temp)},item,all_public=True)
     prod_live_version(parse(trust));checked=verify_public_result(packet,base='https://bgzona.win')
     print('AUTO_PUBLIC_BASELINE_VERIFIED',packet['cid'],len(checked),flush=True)
+
+
+def verify_p4_completed(api,env,run):
+    import auto_intake as auto
+    from registration_entry import pinned_file
+    from e4f_github import _failed_job_log
+    require((run,int(env['GITHUB_RUN_NUMBER']),env['GITHUB_EVENT_NAME'])==
+            (auto.P4_PRIVATE_RUN,auto.P4_NUMBER,'workflow_dispatch'),'P4_COMPLETED_SCOPE')
+    row=auto.control_run(int(env['GITHUB_RUN_ID']),auto.P4_SOURCE,auto.P4_RELAY,
+                         private_api=api,private_main=env['PRIVATE_WORKFLOW_COMMIT'])
+    require(row['source_sha']==auto.P4_SOURCE_SHA and row['head_sha']==env['GITHUB_WORKFLOW_SHA'],'P4_CONTROL_PIN')
+    _failed_job_log(env['GH_TOKEN'],job=129956590856,
+       expected_sha='36e136d75c154ed64a31378e9080f99d7ae4d329f76b10f71fb87d4f1c556346',
+       expected_line=b'2026-11-10T16:32:36.0376774Z STOP E4F_PRIVATE_RUN_UNRESOLVED')
+    require(api.get('/git/ref/heads/cp2b-private-standard-recovery-c2')[0]['object']['sha']==auto.P4_RECOVERY and
+            auto.public('/git/ref/heads/automation-ledger')['object']['sha']==auto.P4_PREFIX,'P4_STATE_MOVED')
+    wf=parse(pinned_file(api,'.github/workflows/e4f-standard-prepare.yml',auto.P4_ORIGIN_MAIN))
+    require((wf['jobs']['prepare']['env']['WORKER_COMMIT'],wf['jobs']['prepare']['env']['MANIFEST_SHA256'])==
+            ('d0d50e811809bfe07e2457a51fc7940d34b6728c','5652eb60b1e4930ee676a60404bda96e302300000d296eb3370f4d6964c53b6d'),
+            'P4_PREPARED_WORKER_PIN')
+    auto.p4_initial(api,env['PRIVATE_WORKFLOW_COMMIT'])
 
 
 if __name__=='__main__':

@@ -77,6 +77,7 @@ def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time
     workflow, _ = get(api, "/actions/workflows/" + PATH.rsplit("/", 1)[1])
     if completed_recovery:
         need(not running and (source_run, relay_run, main_commit, workflow["id"]) in (
+             (42852332535, 42852410172, "85f370875021e1b0dfd9315be63f4051b48d754f", 411050691),
              (CATCHUP_RUN, 42471208063, "7c15826ee3fd93dd327ae321970afe139ad71ffd", 411050691),
              (42525151296, 42528043016, "6dcd8139e7b603531ede09128dba8fd3637e0a1a", 411050691),
              (42622874725, 42622936493, "f8fdb186a2e31d5cd564b59ba6322dad1e26f542", 411050691)),

@@ -39,6 +39,12 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def github(path, token=None, body=None):
+    # Only read the two fixed PUBLIC repositories with the existing job token.
+    # No implicit credential for mutations, PRIVATE, other origins or download hosts.
+    if token is None and body is None and any(path==('/repos/'+repo) or
+            path.startswith('/repos/'+repo+'/') for repo in (CONTROL,ASSETS)):
+        from standard_entry import lab_read_token
+        token=lab_read_token()
     headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'bgzona-e4f/1', 'X-GitHub-Api-Version': '2026-03-10'}
     if token:
         headers['Authorization'] = 'Bearer ' + token
@@ -280,20 +286,9 @@ class PrivateGuardAttester:
                 type(result.get('workflow_run_id')) is int and result['workflow_run_id'] > 0,
                 'E4F_GUARD_DISPATCH_UNRESOLVED')
         run_id = result['workflow_run_id']
-        deadline = self.clock() + 660  # 10-minute guard job + bounded queue/metadata allowance
-        while True:
-            status, row = self.request(root + f'/actions/runs/{run_id}', self.token)
-            require(status in (200, 404), 'E4F_GUARD_RUN_UNRESOLVED')
-            if status == 200:
-                require(row['id'] == run_id, 'E4F_GUARD_RUN_IDENTITY')
-                if row['status'] == 'completed':
-                    self._check_completed(row, run_id, workflow_id, workflow_path,
-                                          'E4F D3 guard ' + proof)
-                    break
-                require(row['status'] in ('queued', 'requested', 'waiting', 'pending', 'in_progress'),
-                        'E4F_GUARD_RUN_UNRESOLVED')
-            require(self.clock() < deadline, 'E4F_GUARD_RUN_UNRESOLVED')
-            self.sleep(2)
+        row=wait_actions_run(lambda:self.request(root+f'/actions/runs/{run_id}',self.token),
+                             run_id,'E4F_GUARD_RUN',PRIVATE_JOB_SECONDS,clock=self.clock,sleep=self.sleep)
+        self._check_completed(row,run_id,workflow_id,workflow_path,'E4F D3 guard '+proof)
         return self._job_evidence(run_id, mode)
 
     def _check_completed(self, row, run_id, workflow_id, workflow_path, title):
@@ -584,3 +579,62 @@ def attest_private_guard(guard, mode, domain, context, operation, record):
     require(mode == 'reserve' and recovery.writable, 'E4F_GUARD_UNRESOLVED')
     guard.reserve(domain, context, operation, record)
     return 'fresh'
+
+
+# Existing 10-minute PRIVATE execution contracts; queues are bounded separately.
+PRIVATE_JOB_SECONDS = 600
+ACTION_QUEUE_SECONDS = 600
+ACTION_READBACK_SECONDS = 60
+TRANSITION_STEP_MINUTES = 55
+INTAKE_JOB_MINUTES = 120  # two independently authenticated <=55-minute steps + setup
+DEV_JOB_SECONDS = 25 * 60
+PROD_JOB_SECONDS = 30 * 60
+PROD_VERIFY_SECONDS = 20 * 60
+MAX_LEDGER_INDEX = 255  # existing _tree limit: 256 records + anchor + records directory
+
+
+def wait_actions_run(read, run, operation, runtime, *, clock=None, sleep=None):
+    """One dispatched run; bounded GET-only waiting, never a retry sender."""
+    import time
+    clock=clock or time.monotonic;sleep=sleep or time.sleep
+    require(type(run) is int and run>0 and type(runtime) is int and runtime>0,'ACTIONS_WAIT_SCOPE')
+    started=clock();hard=started+ACTION_QUEUE_SECONDS+runtime+ACTION_READBACK_SECONDS
+    running=None;last=None;last_log=started-30
+    while True:
+        try:status,row=read()
+        except Exception:
+            print('ACTIONS_WAIT',data(dict(operation=operation,run=run,elapsed=round(clock()-started,1),http_status=None,state='unknown',reason='API_TRANSPORT')).decode(),flush=True)
+            raise ProviderStop(operation+'_API_UNKNOWN') from None
+        now=clock();state=row.get('status') if status==200 and isinstance(row,dict) else 'unavailable'
+        if (status,state)!=last or now-last_log>=30:
+            print('ACTIONS_WAIT',data(dict(operation=operation,run=run,elapsed=round(now-started,1),http_status=status,state=state)).decode(),flush=True);last=(status,state);last_log=now
+        require(status in (200,404),operation+'_API_STATUS')
+        if status==200:
+            require(isinstance(row,dict) and row.get('id')==run,operation+'_IDENTITY')
+            require(state in ('completed','queued','requested','waiting','pending','in_progress'),operation+'_STATE_UNKNOWN')
+            if state=='in_progress' and running is None:running=now
+            if state=='completed':
+                require(now<=hard,operation+'_TIMEOUT')
+                return row
+        require(now<hard,operation+'_TIMEOUT')
+        if running is None:
+            require(now-started<ACTION_QUEUE_SECONDS,operation+'_QUEUE_TIMEOUT')
+        sleep(min(8,max(0,hard-now)))
+
+
+def execution_hint(operation, previous, record):
+    """Scheduling hint from the existing, independently simulated E4G plan.
+
+    It authorizes no operation: every continuation still replays D3/E4M/guard.
+    The record and all old proposal schemas remain unchanged.
+    """
+    require(operation.expected is not None,'EXECUTION_PLAN_MISSING')
+    total=sum(len(s) for s in operation.expected[1:])
+    done=sum(len(s) for s in operation.expected[1:operation.done+1])+int(operation.pending)
+    remaining=total-done-1
+    require(0<=remaining<256 and 0<len(operation.steps)<=128 and
+            record['index']==previous['index']+1 and
+            record['index']+remaining<=MAX_LEDGER_INDEX,'EXECUTION_CAPACITY')
+    return dict(schema=1,request=operation.request,plan=operation.plan_sha,
+                steps=len(operation.steps),transitions=total,remaining=remaining)
+
