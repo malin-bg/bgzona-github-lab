@@ -719,6 +719,149 @@ def prod_input(env,item):
     return data(config),packet
 
 
+def prod_workflow(repo,commit,token=None):
+    """Read only immutable workflow bytes from the two existing public repositories."""
+    from hashlib import sha1
+    require(repo in (CONTROL,PROD) and gb.oid(commit),'PROD_CODE_PIN')
+    path='.github/workflows/shared-media.yml' if repo==CONTROL else '.github/workflows/hugo.yml'
+    status,row=github('/repos/'+repo+'/contents/'+path+'?ref='+commit,token)
+    require(status==200 and (row['type'],row['path'],row['encoding'])==('file',path,'base64') and
+            0<row['size']<=128000,'PROD_CODE_BLOB')
+    raw=base64.b64decode(''.join(row['content'].splitlines()),validate=True)
+    require(len(raw)==row['size'] and sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest()==row['sha'],'PROD_CODE_BLOB')
+    return parse(raw)
+
+
+def prod_consumer(row):
+    """Classify an actual completed consumer, never a skipped/unknown writer."""
+    from standard_entry import lab_read_token
+    token=lab_read_token();root='/repos/'+CONTROL
+    status,run=github(root+f"/actions/runs/{row['id']}/attempts/1",token)
+    require(status==200 and (run['id'],run['workflow_id'],run['run_attempt'],run['event'],
+            run['repository']['id'],run['actor']['id'],run['head_branch'],run['path'].split('@',1)[0],
+            run['head_sha'],run['status'],run['conclusion'])==
+            (row['id'],408732936,1,'workflow_dispatch',CONTROL_ID,gb.CP2B_OWNER_ID,
+             'automation-control','.github/workflows/shared-media.yml',row['head_sha'],'completed',row['conclusion']) and
+            run['conclusion'] in ('success','failure') and run['display_title']==row['display_title'] and
+            run['display_title'].startswith('BGZONA prod ') and gb.sha(run['display_title'][12:]),'PROD_CONSUMER_IDENTITY')
+    workflow=prod_workflow(CONTROL,run['head_sha'],token);job=workflow['jobs']['prod-only']
+    require(job['permissions']==dict(contents='read',actions='read') and job['environment']=='r18h-control','PROD_CONSUMER_PERMISSIONS')
+    app,=[s['with'] for s in job['steps'] if s.get('id')=='prod-app']
+    require(app['repositories']=='bgzona-win' and app['permission-actions']=='write' and
+            not any(k.startswith('permission-') and k!='permission-actions' for k in app),'PROD_CONSUMER_PERMISSIONS')
+    pin,=[s['env']['PROD_WORKFLOW_COMMIT'] for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
+    require(gb.oid(pin),'PROD_CONSUMER_PIN')
+    status,jobs=github(root+f"/actions/runs/{run['id']}/attempts/1/jobs?per_page=100",token)
+    require(status==200 and jobs['total_count']==len(jobs['jobs']) and
+            {j['name'] for j in jobs['jobs']}==set(workflow['jobs']) and
+            all(j['run_id']==run['id'] and j['head_sha']==run['head_sha'] and j['status']=='completed' and
+                j['conclusion']==(run['conclusion'] if j['name']=='prod-only' else 'skipped') for j in jobs['jobs']),
+            'PROD_CONSUMER_ONLY')
+    return dict(run=run['id'],record_sha256=run['display_title'][12:],prod_pin=pin,conclusion=run['conclusion'])
+
+
+def prod_existing_readback(env,run,config,tip,origin):
+    """Complete verification of the original Pages artifact. GETs only; no deployment."""
+    from urllib.request import Request,build_opener
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
+    from pathlib import PurePosixPath
+    import tarfile
+    from e4f_github import NoRedirect
+    token=env['PROD_ACTIONS_TOKEN'];root='/repos/'+PROD;cid=config['cid'];lock=config['accepted']['input']
+    require(env['GITHUB_JOB']=='prod-only' and origin is not None and origin['conclusion']=='failure' and
+            origin['record_sha256']==config['accepted']['record_sha256'] and origin['prod_pin']==run['head_sha'] and
+            (run['workflow_id'],run['run_attempt'],run['event'],run['repository']['id'],run['actor']['id'],
+             run['head_branch'],run['status'],run['conclusion'],run['display_title'])==
+            (PROD_WORKFLOW,1,'workflow_dispatch',PROD_ID,353092585,'main','completed','failure','PROD '+cid),
+            'PROD_EXISTING_IDENTITY')
+    for pending in ('in_progress','queued','waiting'):
+        status,active=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+'/runs?status='+pending+'&per_page=100',token)
+        require(status==200 and active['total_count']==0,'PROD_CONCURRENT')
+    current=prod_workflow(PROD,env['PROD_WORKFLOW_COMMIT'],token)
+    if run['head_sha']!=tip:
+        status,comparison=github(root+'/compare/'+run['head_sha']+'...'+tip,token)
+        require(status==200 and comparison['status']=='ahead' and comparison['merge_base_commit']['sha']==run['head_sha'] and
+                0<comparison['total_commits']<=256 and [r['filename'] for r in comparison['files']]==['.github/workflows/hugo.yml'],
+                'PROD_EXISTING_SOURCE_CHANGED')
+    old=prod_workflow(PROD,run['head_sha'],token)
+    old['jobs']['deploy']['steps'][1]['run']=current['jobs']['deploy']['steps'][1]['run']
+    require(old==current,'PROD_EXISTING_SOURCE_CHANGED')
+    status,jobs=github(root+f"/actions/runs/{run['id']}/attempts/1/jobs?per_page=100",token)
+    require(status==200 and jobs['total_count']==len(jobs['jobs'])==2 and
+            {j['name']:j['conclusion'] for j in jobs['jobs']}==dict(build='success',deploy='failure') and
+            all(j['run_id']==run['id'] and j['head_sha']==run['head_sha'] and j['status']=='completed' for j in jobs['jobs']),
+            'PROD_EXISTING_JOBS')
+    build,=[j for j in jobs['jobs'] if j['name']=='build'];deploy,=[j for j in jobs['jobs'] if j['name']=='deploy']
+    require(all(any(s['name']==name and s['conclusion']=='success' for s in build['steps']) for name in
+            ('Trusted PROD input, current-source build, acceptance and seal','Verify accepted output immediately before upload',
+             'Upload exactly accepted Pages output')) and
+            any(s['name']=='Deploy this run accepted Pages artifact' and s['conclusion']=='success' for s in deploy['steps']) and
+            [s['name'] for s in deploy['steps'] if s['conclusion']=='failure']==['Verify public PROD CID and files against the seal'],
+            'PROD_EXISTING_NOT_DEPLOYED')
+    status,listing=github(root+f"/actions/runs/{run['id']}/artifacts?per_page=100",token)
+    require(status==200 and listing['total_count']==len(listing['artifacts']),'PROD_ARTIFACT_WINDOW')
+    assets=[a for a in listing['artifacts'] if a['name']=='github-pages'];require(len(assets)==1,'PROD_ARTIFACT_IDENTITY');asset,=assets
+    require(asset['expired'] is False and 0<asset['size_in_bytes']<=64_000_000 and
+            (asset['workflow_run']['id'],asset['workflow_run']['repository_id'],asset['workflow_run']['head_repository_id'],
+             asset['workflow_run']['head_branch'],asset['workflow_run']['head_sha'])==
+            (run['id'],PROD_ID,PROD_ID,'main',run['head_sha']) and
+            asset['digest'].startswith('sha256:') and gb.sha(asset['digest'][7:]),'PROD_ARTIFACT_IDENTITY')
+    request=Request('https://api.github.com'+root+f"/actions/artifacts/{asset['id']}/zip",headers={
+            'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2026-03-10'})
+    opener=build_opener(NoRedirect)
+    try:
+        with opener.open(request,timeout=20) as response:
+            require(response.status==200,'PROD_ARTIFACT_HTTP');raw=response.read(64_000_001)
+    except HTTPError as error:
+        location=error.headers.get('Location','');target=urlsplit(location)
+        require(error.code==302 and target.scheme=='https' and not target.username and not target.password and
+                target.port in (None,443) and target.hostname and target.hostname.endswith('.blob.core.windows.net'),
+                'PROD_ARTIFACT_REDIRECT')
+        # The repository token is never forwarded to the signed artifact host.
+        with opener.open(Request(location),timeout=30) as response:
+            require(response.status==200,'PROD_ARTIFACT_HTTP');raw=response.read(64_000_001)
+    require(len(raw)==asset['size_in_bytes'] and digest(raw)==asset['digest'][7:],'PROD_ARTIFACT_SHA')
+    with ZipFile(BytesIO(raw)) as archive:
+        require(archive.namelist()==['artifact.tar'] and archive.getinfo('artifact.tar').file_size<=256_000_000,'PROD_ARTIFACT_SET')
+        tar=archive.read('artifact.tar')
+    buffers={}
+    with tarfile.open(fileobj=BytesIO(tar),mode='r:') as archive:
+        members=archive.getmembers();require(len(members)<=10000 and sum(m.size for m in members)<=256_000_000,'PROD_ARTIFACT_LIMIT')
+        for member in members:
+            path=PurePosixPath(member.name)
+            require(not path.is_absolute() and '..' not in path.parts and '\\' not in member.name,'PROD_ARTIFACT_PATH')
+            if member.isdir():continue
+            name=path.as_posix();require(member.isfile() and 0<=member.size<=16_000_000 and
+                    name.casefold() not in {n.casefold() for n in buffers},'PROD_ARTIFACT_FILE')
+            buffers[name]=archive.extractfile(member).read()
+    release=public_release(lock['provider']['tag']);payload=public_asset(release,lock['archive_name'],lock['bytes'],64_000_000)
+    require(release['id']==lock['provider']['release_id'] and
+            any(a['id']==lock['provider']['asset_id'] and a['name']==lock['archive_name'] for a in release['assets']) and
+            digest(payload)==lock['archive_sha256'],'PROD_PROJECTION_IDENTITY')
+    with ZipFile(BytesIO(payload)) as archive:
+        cat=archive.read('artifact/catalog.json');expected=archive.read('expected-files.json')
+    require(digest(cat)==lock['source_catalog_sha256'] and digest(expected)==lock['expected_files_sha256'],'PROD_PROJECTION_IDENTITY')
+    paths={'/','/kolaji/','/poslaniya/','/media-version.json'};expected=parse(expected)
+    for row in parse(cat)['items']:
+        if row['state']!='published':continue
+        original=row['original'];og=row.get('og') or original;paths.update((row['page_url'],original,og))
+        for path in (original,og):require(digest(buffers[path.lstrip('/')])==expected[path.lstrip('/')],'PROD_ARTIFACT_MEDIA_SHA')
+    require(parse(buffers['media-version.json'])==dict(cid=cid,channel='prod',registry_sha256=config['accepted']['registry_sha256']),
+            'PROD_ARTIFACT_CID')
+    pairs=[[p,digest(buffers[p.lstrip('/')+('index.html' if p.endswith('/') else '')])] for p in sorted(paths)]
+    command=current['jobs']['deploy']['steps'][1]['run'];prefix="set -euo pipefail\npython -B - <<'PY'\n"
+    require(command.startswith(prefix) and command.endswith('\nPY'),'PROD_HTTP_CHECKER_SOURCE')
+    checker=command[len(prefix):-3];compile(checker,'approved-PROD-HTTP-checker','exec')
+    result=subprocess.run([sys.executable,'-I','-B','-c',checker],env={'CID':cid,'CHECKS':data(pairs).decode()},
+                          capture_output=True,text=True,encoding='utf8',timeout=150)
+    print(result.stdout,end='',flush=True)
+    require(result.returncode==0 and result.stdout.splitlines().count('PUBLIC_PROD_VERIFIED '+cid+' '+str(len(pairs)))==1,
+            'PROD_EXISTING_HTTP_UNVERIFIED')
+    require(prod_source(env,token)==tip,'PROD_SOURCE_MOVED')
+    print('PROD_EXISTING_DELIVERY_VERIFIED',run['id'],asset['id'],asset['digest'],digest(checker.encode()),len(pairs),flush=True)
+    return run['id']
+
 def prod_source(env,token):
     """An immutable approved consumer; subsequent article-only commits are data."""
     pin=env['PROD_WORKFLOW_COMMIT'];require(gb.oid(pin),'PROD_WORKER_PIN')
@@ -743,7 +886,7 @@ def prod_source(env,token):
     return tip
 
 
-def dispatch_prod(env,trust):
+def dispatch_prod(env,trust, *, existing_only=False, origin=None):
     """One existing workflow dispatch; unknown or failed delivery is never resent."""
     import time
     from urllib.parse import quote
@@ -754,16 +897,19 @@ def dispatch_prod(env,trust):
     status,wf=github(root+'/actions/workflows/'+str(PROD_WORKFLOW),token)
     require(status==200 and (wf['id'],wf['path'],wf['state'])==
             (PROD_WORKFLOW,'.github/workflows/hugo.yml','active'),'PROD_WORKFLOW')
-    status,origin=github('/repos/'+CONTROL+'/git/commits/'+a['ledger_commit'])
-    require(status==200 and origin['sha']==a['ledger_commit'],'PROD_LEDGER_COMMIT')
-    created=quote('>='+origin['committer']['date'],safe='')
+    status,ledger_commit=github('/repos/'+CONTROL+'/git/commits/'+a['ledger_commit'])
+    require(status==200 and ledger_commit['sha']==a['ledger_commit'],'PROD_LEDGER_COMMIT')
+    created=quote('>='+ledger_commit['committer']['date'],safe='')
     status,history=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+
         '/runs?event=workflow_dispatch&branch=main&created='+created+'&per_page=100',token)
     require(status==200 and history['total_count']==len(history['workflow_runs']),'PROD_HISTORY_WINDOW')
     hits=[r for r in history['workflow_runs'] if r['display_title']=='PROD '+cid]
     require(len(hits)<=1,'PROD_DUPLICATE')
+    require(not existing_only or len(hits)==1,'PROD_PRIOR_UNRESOLVED')
     if hits:
         r,=hits
+        if existing_only:
+            return prod_existing_readback(env,r,config,tip,origin)
         require(r['run_attempt']==1 and r['head_sha']==tip and
                 r['conclusion']=='success' and r['status']=='completed','PROD_PRIOR_UNRESOLVED')
         run=r['id']
@@ -816,11 +962,20 @@ def prod_main(env):
     require(status==200 and all(r['id']==row['id'] or r['status']=='completed' for r in history['workflow_runs']),
             'PROD_CONCURRENT')
     previous=[r for r in history['workflow_runs'] if r['id']!=row['id'] and
-              r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume ','BGZONA prod '))]
+              r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume '))]
     require(previous and max(previous,key=lambda r:r['run_number'])['conclusion']=='success','PROD_PRIOR_UNRESOLVED')
+    consumers=[r for r in history['workflow_runs'] if r['id']!=row['id'] and r['display_title'].startswith('BGZONA prod ')]
+    failed=[r for r in consumers if r['display_title']==row['display_title'] and r['conclusion']=='failure']
+    require(len(failed)<=1,'PROD_PRIOR_UNRESOLVED')
+    origin=prod_consumer(failed[0]) if failed else None
+    if consumers:
+        last=max(consumers,key=lambda r:r['run_number'])
+        require(last['conclusion']=='success' or origin is not None and last['id']==origin['run'],'PROD_PRIOR_UNRESOLVED')
+        if last['conclusion']=='success':prod_consumer(last)
     item=proposal(params['record_sha256'],normal=True)
     trust,packet=prod_input(env,item)
-    dispatch_prod(env,trust)
+    # A prior failed consumer may ONLY verify its original artifact: no dispatch.
+    dispatch_prod(env,trust,existing_only=origin is not None,origin=origin)
     from auto_intake import verify_public_result
     checked=verify_public_result(packet,base='https://bgzona.win')
     print('PROD_PUBLIC_VERIFIED',packet['cid'],digest(data(checked)),flush=True)

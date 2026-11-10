@@ -599,7 +599,7 @@
             "AUTO_PHASE": "dev",
             "AUTO_RECORD": "${{ needs.auto-intake.outputs.record }}",
             "PROD_ACTIONS_TOKEN": "${{ steps.prod-app.outputs.token }}",
-            "PROD_WORKFLOW_COMMIT": "9840b3ae74477f8b168b127f8ae3fd15166aac14"
+            "PROD_WORKFLOW_COMMIT": "f0b3bd6930a29dcb811c0de19ce45245a8183024"
           },
           "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
         }
@@ -645,7 +645,7 @@
             "GH_TOKEN": "${{ github.token }}",
             "AUTO_PHASE": "dev",
             "PROD_ACTIONS_TOKEN": "${{ steps.prod-app.outputs.token }}",
-            "PROD_WORKFLOW_COMMIT": "9840b3ae74477f8b168b127f8ae3fd15166aac14"
+            "PROD_WORKFLOW_COMMIT": "f0b3bd6930a29dcb811c0de19ce45245a8183024"
           },
           "run": "set -euo pipefail\n[[ \"$GITHUB_REF_PROTECTED\" == true ]]\nwork=$(mktemp -d \"$RUNNER_TEMP/r18h-control.XXXXXXXX\")\n(cd tools/cp2b/r18h/worker && sha256sum --check --strict --status ../worker.sha256)\n/usr/bin/python3 -I -B -c 'import platform,sys; assert sys.version_info[:2] == (3,12) and platform.machine() == \"x86_64\"'\nwheel=\"$work/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl\"\nenv -u GH_TOKEN curl --disable --silent --fail --proto '=https' --max-time 30 \\\n  'https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' -o \"$wheel\"\nprintf '%s  %s\\n' '42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca' \"$wheel\" | sha256sum --check --status\nenv -u GH_TOKEN /usr/bin/python3 -I -B -m pip --isolated install --quiet \\\n  --no-index --no-deps --no-cache-dir --no-compile --target \"$work/deps\" \"$wheel\"\n/usr/bin/python3 -I -B -c 'import runpy,sys; sys.path[:0]=sys.argv[1:3]; import PIL; assert PIL.__version__==\"13.0.0\"; runpy.run_module(\"control_entry\",run_name=\"__main__\")' \"$GITHUB_WORKSPACE/tools/cp2b/r18h/worker\" \"$work/deps\""
         }

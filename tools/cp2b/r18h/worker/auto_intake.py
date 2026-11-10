@@ -432,7 +432,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
-                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX, "BGZONA prod ")) and
+                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
                 not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
@@ -457,6 +457,14 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     if previous:
         require(max(previous, key=lambda r: r["run_number"])["conclusion"] == "success",
                 "AUTO_PREVIOUS_UNRESOLVED")
+    # A consumer cannot append D3, but a failed/unknown consumer still blocks.
+    consumers=[r for r in history["workflow_runs"] if r["id"]!=run and
+               r.get("display_title", "").startswith("BGZONA prod ")]
+    if consumers:
+        from control_entry import prod_consumer
+        last=max(consumers,key=lambda r:r["run_number"])
+        require(last["conclusion"]=="success","AUTO_CONSUMER_UNRESOLVED")
+        prod_consumer(last)
     protection=public("/rulesets/26657290")
     require(protection["enforcement"]=="active" and
             {r["type"] for r in protection["rules"]}=={"update","deletion","non_fast_forward"} and
@@ -1011,9 +1019,22 @@ def verify_public_result(proof_packet, *, get=None, base='https://dev.bgzona.win
             require(path.startswith("/") and not path.startswith("//") and
                     ".." not in path.split("/") and "\\" not in path,"AUTO_PUBLIC_PATH")
             url=base+quote(path,safe="/")+"?cid="+proof_packet["cid"]
-            with build_opener(NoRedirect).open(Request(url,headers={"Cache-Control":"no-cache"}),timeout=10) as response:
-                require(response.status==200,"AUTO_PUBLIC_HTTP")
-                raw=response.read(limit+1)
+            from urllib.error import HTTPError,URLError
+            try:
+                with build_opener(NoRedirect).open(Request(url,headers={
+                        "Cache-Control":"no-cache",
+                        "User-Agent":"BGZONA-Public-Verification/1.0 (+https://bgzona.win/)"}),timeout=10) as response:
+                    require(response.status==200,"AUTO_PUBLIC_HTTP")
+                    raw=response.read(limit+1)
+            except HTTPError as error:
+                print("AUTO_PUBLIC_HTTP_FAILURE",data(dict(path=path,status=error.code)).decode(),flush=True)
+                raise ProviderStop("AUTO_PUBLIC_HTTP") from None
+            except (URLError,TimeoutError) as error:
+                reason=error.reason if isinstance(error,URLError) else error
+                print("AUTO_PUBLIC_HTTP_FAILURE",data(dict(path=path,
+                    reason="TIMEOUT" if isinstance(reason,TimeoutError) else "NETWORK",
+                    error_type=type(reason).__name__)).decode(),flush=True)
+                raise ProviderStop("AUTO_PUBLIC_HTTP") from None
             require(len(raw)<=limit,"AUTO_PUBLIC_LIMIT")
             return raw
     require(gb.sha(proof_packet["cid"]),"AUTO_PUBLIC_CID")
