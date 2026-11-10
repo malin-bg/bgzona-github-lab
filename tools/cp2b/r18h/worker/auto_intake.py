@@ -457,20 +457,27 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     if previous:
         require(max(previous, key=lambda r: r["run_number"])["conclusion"] == "success",
                 "AUTO_PREVIOUS_UNRESOLVED")
-    # A consumer cannot append D3, but a failed/unknown consumer still blocks.
+    # A failed repeatable read does not imply an unfinished writer. Mixed consumers
+    # remain unresolved until a later positive read-only proof; live proof is also
+    # required at the authenticated final D3 boundary before new registration/CAS.
     consumers=[r for r in history["workflow_runs"] if r["id"]!=run and
                r.get("display_title", "").startswith("BGZONA prod ")]
-    if consumers:
-        from control_entry import prod_consumer
-        last=max(consumers,key=lambda r:r["run_number"])
-        require(last["conclusion"]=="success","AUTO_CONSUMER_UNRESOLVED")
-        prod_consumer(last)
+    consumer_history(consumers)
     protection=public("/rulesets/26657290")
     require(protection["enforcement"]=="active" and
             {r["type"] for r in protection["rules"]}=={"update","deletion","non_fast_forward"} and
             protection["conditions"]["ref_name"]["include"]==[CONTROL_REF] and
             protection["conditions"]["ref_name"]["exclude"]==[],"AUTO_CONTROL_PROTECTION")
     return row
+
+
+def consumer_history(rows):
+    from control_entry import prod_consumer
+    for row in sorted(rows,key=lambda r:r['run_number'],reverse=True):
+        result=prod_consumer(row)
+        if result['conclusion']=='success':return
+        require(result['read_only'],'AUTO_CONSUMER_UNRESOLVED')
+    require(not rows,'AUTO_CONSUMER_BASELINE_REQUIRED')
 
 
 def context(env):
@@ -958,6 +965,8 @@ def main(env):
         bound=binding(state["recovered"],latest["primary_main"])
         require(bound is not None,"AUTO_ACCEPTED_REQUEST")
         if bound["final"]:
+            require(bound["phase"]=="staged","AUTO_FINAL_REQUIRED")
+            control.ensure_current_public(env,item)
             work=next_source(api,previous["head_sha"],known=params["source_sha"])
             if work is None or work=="WAIT":
                 with open(env["GITHUB_OUTPUT"],"a",encoding="ascii") as f: f.write("work=false\n")
