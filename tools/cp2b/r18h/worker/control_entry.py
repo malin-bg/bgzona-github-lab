@@ -20,6 +20,9 @@ from standard_entry import (BOOTSTRAP, PIN, c3_control_run, control_run, proposa
 
 ASSETS_ID=1173521221
 DEV='malin-bg/bgzona-win-dev'
+PROD='malin-bg/bgzona-win'
+PROD_ID=1128312231
+PROD_WORKFLOW=249807408
 STAGES=('refs/heads/r18h-staging-authority','refs/heads/r18h-staging-witness')
 CONTROL_REF='refs/heads/automation-control'
 RESUME_SOURCE_RUN=42194020254
@@ -693,8 +696,139 @@ def c3_main(env):
         c3_dispatch_dev(env,raw)
 
 
+
+def prod_input(env,item):
+    """Reuse the verified immutable DEV projection; only the consumer CID changes."""
+    from urllib.request import Request,build_opener
+    from e4f_github import NoRedirect
+    dev=dev_input(env,'dev-pin',item,normal=True)
+    config=parse(dev);accepted=config['accepted'];wanted=config['cid']
+    try:
+        with build_opener(NoRedirect).open(Request('https://dev.bgzona.win/media-version.json?cid='+wanted,
+                headers={'Cache-Control':'no-cache'}),timeout=15) as response:
+            require(response.status==200,'PROD_DEV_HTTP');wire=response.read(32001)
+    except Exception:raise ProviderStop('PROD_DEV_NOT_ACCEPTED') from None
+    require(len(wire)<=32000 and parse(wire)==dict(cid=wanted,channel='dev',
+            registry_sha256=accepted['registry_sha256']),'PROD_DEV_NOT_ACCEPTED')
+    # No authority mutation, new D3 append, filtering or private content.
+    accepted['channel']='prod';accepted['input']['repository']=PROD
+    config['cid']=digest(data(accepted))
+    packet=parse((Path(env['RUNNER_TEMP'])/'r18h-dev-input/public-verification.json').read_bytes())
+    require(packet['cid']==wanted,'PROD_DEV_PACKET');packet['cid']=config['cid']
+    print('PROD_ACCEPTED_CID',config['cid'],accepted['record_sha256'],flush=True)
+    return data(config),packet
+
+
+def prod_source(env,token):
+    """An immutable approved consumer; subsequent article-only commits are data."""
+    pin=env['PROD_WORKFLOW_COMMIT'];require(gb.oid(pin),'PROD_WORKER_PIN')
+    root='/repos/'+PROD
+    status,ref=github(root+'/git/ref/heads/main',token)
+    require(status==200 and ref['ref']=='refs/heads/main' and gb.oid(ref['object']['sha']),'PROD_HEAD')
+    tip=ref['object']['sha']
+    if tip!=pin:
+        status,row=github(root+'/compare/'+pin+'...'+tip,token)
+        require(status==200 and row['status']=='ahead' and row['merge_base_commit']['sha']==pin and
+                0<row['total_commits']<=256,'PROD_SOURCE_ANCESTRY')
+        def tree(commit):
+            status,c=github(root+'/git/commits/'+commit,token)
+            require(status==200 and c['sha']==commit,'PROD_SOURCE_COMMIT')
+            status,t=github(root+'/git/trees/'+c['tree']['sha']+'?recursive=1',token)
+            require(status==200 and t['truncated'] is False,'PROD_SOURCE_TREE')
+            return {r['path']:(r['mode'],r['type'],r['sha']) for r in t['tree'] if r['type']!='tree'}
+        old,new=tree(pin),tree(tip)
+        changed={p for p in old.keys()|new.keys() if old.get(p)!=new.get(p)}
+        require(changed and all(p.startswith('content/') and
+                (p not in new or new[p][:2]==('100644','blob')) for p in changed),'PROD_EXECUTION_CODE_CHANGED')
+    return tip
+
+
+def dispatch_prod(env,trust):
+    """One existing workflow dispatch; unknown or failed delivery is never resent."""
+    import time
+    from urllib.parse import quote
+    config=parse(trust);cid=config['cid'];a=config['accepted'];token=env['PROD_ACTIONS_TOKEN']
+    require(a['channel']=='prod' and a['input']['repository']==PROD and
+            digest(data(a))==cid and gb.sha(cid) and 0<len(trust)<=8192,'PROD_DISPATCH_INPUT')
+    root='/repos/'+PROD;tip=prod_source(env,token)
+    status,wf=github(root+'/actions/workflows/'+str(PROD_WORKFLOW),token)
+    require(status==200 and (wf['id'],wf['path'],wf['state'])==
+            (PROD_WORKFLOW,'.github/workflows/hugo.yml','active'),'PROD_WORKFLOW')
+    status,origin=github('/repos/'+CONTROL+'/git/commits/'+a['ledger_commit'])
+    require(status==200 and origin['sha']==a['ledger_commit'],'PROD_LEDGER_COMMIT')
+    created=quote('>='+origin['committer']['date'],safe='')
+    status,history=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+
+        '/runs?event=workflow_dispatch&branch=main&created='+created+'&per_page=100',token)
+    require(status==200 and history['total_count']==len(history['workflow_runs']),'PROD_HISTORY_WINDOW')
+    hits=[r for r in history['workflow_runs'] if r['display_title']=='PROD '+cid]
+    require(len(hits)<=1,'PROD_DUPLICATE')
+    if hits:
+        r,=hits
+        require(r['run_attempt']==1 and r['head_sha']==tip and
+                r['conclusion']=='success' and r['status']=='completed','PROD_PRIOR_UNRESOLVED')
+        run=r['id']
+    else:
+        for pending in ('in_progress','queued','waiting'):
+            status,active=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+
+                '/runs?status='+pending+'&per_page=100',token)
+            require(status==200 and active['total_count']==0,'PROD_CONCURRENT')
+        status,r=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+'/dispatches',token,
+             {'ref':'main','inputs':{'accepted_cid':cid,'input_trust':trust.decode()},'return_run_details':True})
+        require(status==200 and type(r) is dict and gb.positive(r.get('workflow_run_id')),'PROD_DISPATCH_UNKNOWN')
+        run=r['workflow_run_id']
+    print('PROD_RUN',run,cid,flush=True)
+    deadline=time.monotonic()+660
+    while time.monotonic()<deadline:
+        status,r=github(root+f'/actions/runs/{run}/attempts/1',token)
+        require(status in (200,404),'PROD_RUN_UNRESOLVED')
+        if status==200 and r['status']=='completed':
+            require((r['id'],r['workflow_id'],r['run_attempt'],r['repository']['id'],r['head_branch'],
+                     r['head_sha'],r['actor']['id'],r['event'],r['display_title'],r['conclusion'])==
+                    (run,PROD_WORKFLOW,1,PROD_ID,'main',tip,353092585,'workflow_dispatch','PROD '+cid,'success'),
+                    'PROD_RUN_IDENTITY')
+            status,jobs=github(root+f'/actions/runs/{run}/attempts/1/jobs?per_page=100',token)
+            require(status==200 and {j['name']:j['conclusion'] for j in jobs['jobs']}==
+                    {'build':'success','deploy':'success'} and any(
+                        s['name']=='Verify public PROD CID and files against the seal' and s['conclusion']=='success'
+                        for j in jobs['jobs'] if j['name']=='deploy' for s in j['steps']),'PROD_SEAL_READBACK')
+            status,last=github(root+'/git/ref/heads/main',token)
+            require(status==200 and last['object']['sha']==tip,'PROD_SOURCE_MOVED')
+            return run
+        time.sleep(8)
+    raise ProviderStop('PROD_RUN_UNRESOLVED')
+
+
+def prod_main(env):
+    require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_REPOSITORY']==CONTROL and
+            env['GITHUB_REPOSITORY_ID']==str(CONTROL_ID) and env['GITHUB_REF']==CONTROL_REF and
+            env['GITHUB_REF_PROTECTED']=='true' and env['GITHUB_ACTOR_ID']==str(gb.CP2B_OWNER_ID) and
+            env['GITHUB_RUN_ATTEMPT']=='1' and env['GITHUB_EVENT_NAME']=='workflow_dispatch' and
+            env['GITHUB_WORKFLOW_REF']==CONTROL+'/.github/workflows/shared-media.yml@'+CONTROL_REF and
+            env['GITHUB_JOB']=='prod-only','PROD_CONTROL_CONTEXT')
+    params=parse(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
+    require(set(params)<={'mode','record_sha256','source_run','private_run','relay_run'} and
+            params['mode']=='prod' and gb.sha(params['record_sha256']) and
+            all(params.get(k,'')=='' for k in ('source_run','private_run','relay_run')),'PROD_CONTROL_INPUT')
+    row=control_run(int(env['GITHUB_RUN_ID']))
+    require(row['head_sha']==env['GITHUB_WORKFLOW_SHA'] and row['status']=='in_progress' and
+            row['display_title']=='BGZONA prod '+params['record_sha256'],'PROD_CONTROL_IDENTITY')
+    status,history=github('/repos/'+CONTROL+'/actions/workflows/408732936/runs?per_page=100')
+    require(status==200 and all(r['id']==row['id'] or r['status']=='completed' for r in history['workflow_runs']),
+            'PROD_CONCURRENT')
+    previous=[r for r in history['workflow_runs'] if r['id']!=row['id'] and
+              r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume ','BGZONA prod '))]
+    require(previous and max(previous,key=lambda r:r['run_number'])['conclusion']=='success','PROD_PRIOR_UNRESOLVED')
+    item=proposal(params['record_sha256'],normal=True)
+    trust,packet=prod_input(env,item)
+    dispatch_prod(env,trust)
+    from auto_intake import verify_public_result
+    checked=verify_public_result(packet,base='https://bgzona.win')
+    print('PROD_PUBLIC_VERIFIED',packet['cid'],digest(data(checked)),flush=True)
+
+
 def main(env):
     inputs=parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes()).get("inputs",{})
+    if inputs.get('mode')=='prod':return prod_main(env)
     if inputs.get("mode") in ("auto", "auto-resume", "f1-resume"):
         from auto_intake import main as auto_main
         return auto_main(env)

@@ -432,7 +432,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
-                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
+                r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX, "BGZONA prod ")) and
                 not (recovering and r["id"] == RECOVERY_FAILED) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
                 not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
@@ -485,8 +485,9 @@ def context(env):
     require(not f1 or (source,relay)==(42525151296,42528043016),"F1_CONTROL_INPUT")
     require(not recovering or (source, relay) == (push_relay.CATCHUP_RUN, RECOVERY_RELAY),
             "AUTO_RECOVERY_SCOPE")
-    phase = env["AUTO_PHASE"]
-    require(phase in ("intake","assets","dev") and
+    phase = 'prod' if env.get('GITHUB_JOB')=='auto-prod' else env['AUTO_PHASE']
+    require(phase!='prod' or env['AUTO_PHASE']=='dev','PROD_READ_ROLE')
+    require(phase in ("intake","assets","dev","prod") and
             env["GITHUB_JOB"] == "auto-" + phase, "AUTO_JOB")
     api = proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"]) if phase == "intake" else None
     row=control_run(int(env["GITHUB_RUN_ID"]), source, relay, private_api=api,
@@ -886,8 +887,19 @@ def main(env):
     from e4f_github import GitHubLedgerAppend
     from request_executor import binding
     params=context(env)
-    phase=env["AUTO_PHASE"]
+    phase='prod' if env.get('GITHUB_JOB')=='auto-prod' else env['AUTO_PHASE']
     pins=parse(standard.BOOTSTRAP.read_bytes())
+    if phase=='prod':
+        require(params['mode']=='auto','PROD_AUTO_MODE')
+        jobs=public(f"/actions/runs/{env['GITHUB_RUN_ID']}/attempts/1/jobs?per_page=100")['jobs']
+        done=[j for j in jobs if j['name']=='auto-dev']
+        require(len(done)==1 and done[0]['status']=='completed' and done[0]['conclusion']=='success','PROD_DEV_JOB_REQUIRED')
+        item=standard.proposal(env['AUTO_RECORD'],normal=True)
+        trust,packet=control.prod_input(env,item)
+        control.dispatch_prod(env,trust)
+        checked=verify_public_result(packet,base='https://bgzona.win')
+        print('AUTO_PUBLIC_PROD_VERIFIED',packet['cid'],digest(data(checked)))
+        return
     if phase=="intake" and params["mode"]=="f1-resume":
         api=proof.GitHub(env["PRIVATE_ACTIONS_TOKEN"])
         item=f1_prepared(api)
@@ -985,7 +997,7 @@ def main(env):
     print("AUTO_PUBLIC_DEV_VERIFIED",packet["cid"],digest(data(checked)))
 
 
-def verify_public_result(proof_packet, *, get=None):
+def verify_public_result(proof_packet, *, get=None, base='https://dev.bgzona.win'):
     """Verify actual DEV bytes using the same existing Privacy Gate."""
     from html import unescape
     from html.parser import HTMLParser
@@ -993,11 +1005,12 @@ def verify_public_result(proof_packet, *, get=None):
     from urllib.request import Request,build_opener
     from e4f_github import NoRedirect
     import privacy_gate
+    require(base in ('https://dev.bgzona.win','https://bgzona.win'),'AUTO_PUBLIC_TARGET')
     if get is None:
         def get(path,limit):
             require(path.startswith("/") and not path.startswith("//") and
                     ".." not in path.split("/") and "\\" not in path,"AUTO_PUBLIC_PATH")
-            url="https://dev.bgzona.win"+quote(path,safe="/")+"?cid="+proof_packet["cid"]
+            url=base+quote(path,safe="/")+"?cid="+proof_packet["cid"]
             with build_opener(NoRedirect).open(Request(url,headers={"Cache-Control":"no-cache"}),timeout=10) as response:
                 require(response.status==200,"AUTO_PUBLIC_HTTP")
                 raw=response.read(limit+1)
@@ -1026,7 +1039,7 @@ def verify_public_result(proof_packet, *, get=None):
                     "AUTO_PUBLIC_PRIVACY")
         require(page.og is not None,"AUTO_PUBLIC_OG")
         url=urlsplit(page.og)
-        require(url.scheme=="https" and url.netloc=="dev.bgzona.win" and not url.query and not url.fragment,
+        require(url.scheme=="https" and url.netloc==urlsplit(base).netloc and not url.query and not url.fragment,
                 "AUTO_PUBLIC_OG_SCOPE")
         og=get(url.path,16_000_000)
         if row.get("og"):
