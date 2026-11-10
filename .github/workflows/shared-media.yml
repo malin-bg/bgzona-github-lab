@@ -20,8 +20,7 @@
             "auto",
             "auto-resume",
             "f1-resume",
-            "prod",
-            "prod-api-probe"
+            "prod"
           ],
           "required": true
         },
@@ -652,37 +651,6 @@
         }
       ],
       "environment": "r18h-control"
-    },
-    "prod-api-probe": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'prod-api-probe'",
-      "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 4,
-      "environment": "r18h-control",
-      "permissions": {
-        "contents": "read",
-        "actions": "read"
-      },
-      "steps": [
-        {
-          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
-          "id": "prod-app",
-          "with": {
-            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
-            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
-            "owner": "malin-bg",
-            "repositories": "bgzona-win",
-            "permission-actions": "write"
-          }
-        },
-        {
-          "name": "Read exact PROD concurrency API with the scoped R App token",
-          "shell": "bash",
-          "env": {
-            "PROBE_R_TOKEN": "${{ steps.prod-app.outputs.token }}"
-          },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B - <<'PY'\n\"\"\"Temporary same-App diagnostic: fixed GETs only, no worker execution.\"\"\"\nimport json,os,sys\nfrom urllib.request import Request,build_opener,HTTPRedirectHandler\nfrom urllib.error import HTTPError,URLError\nassert sys.version_info[:2]==(3,12)\nassert (os.environ['GITHUB_REPOSITORY_ID'],os.environ['GITHUB_REF'],os.environ['GITHUB_REF_PROTECTED'],os.environ['GITHUB_ACTOR_ID'],os.environ['GITHUB_RUN_ATTEMPT'],os.environ['GITHUB_EVENT_NAME'])==('1426765395','refs/heads/automation-control','true','252877943','1','workflow_dispatch')\nclass NoRedirect(HTTPRedirectHandler):\n def redirect_request(self,*args,**kwargs):return None\nrequests=[('scope','/installation/repositories?per_page=100')]+[(state,'/repos/malin-bg/bgzona-win/actions/workflows/249807408/runs?status='+state+'&per_page=100') for state in ('in_progress','queued','waiting')]\nfor label,path in requests:\n result=dict(check=label);headers={}\n try:\n  req=Request('https://api.github.com'+path,method='GET',headers={'Authorization':'Bearer '+os.environ['PROBE_R_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'bgzona-e4f/1','X-GitHub-Api-Version':'2026-03-10'})\n  try:\n   with build_opener(NoRedirect).open(req,timeout=15) as response:\n    result['http_status']=response.status;headers=response.headers;raw=response.read(2_000_001)\n  except HTTPError as error:\n   result['http_status']=error.code;headers=error.headers;raw=error.read(2_000_001)\n  result['response_bounded']=len(raw)<=2_000_000\n  try:body=json.loads(raw) if result['response_bounded'] else {}\n  except (ValueError,UnicodeError):body={};result['failure_type']='INVALID_JSON'\n  if result['http_status']==200:\n   if label=='scope':\n    repos=body.get('repositories',[]);result.update(repository_count=body.get('total_count'),repositories=[dict(id=r.get('id'),name=r.get('full_name')) for r in repos]);result['exact_prod_scope']=body.get('total_count')==len(repos)==1 and (repos[0]['id'],repos[0]['full_name'])==(1128312231,'malin-bg/bgzona-win')\n   else:\n    runs=body.get('workflow_runs');result.update(total_count=body.get('total_count'),returned_count=len(runs) if isinstance(runs,list) else None,runs=[{k:r.get(k) for k in ('id','run_attempt','status','conclusion')} for r in runs] if isinstance(runs,list) else None)\n    result['failure_type']='NONE' if type(body.get('total_count')) is int and isinstance(runs,list) and body['total_count']==len(runs)==0 else 'ACTIVE_RUNS_OR_RESPONSE_SHAPE'\n  else:\n   message=str(body.get('message','')).casefold() if isinstance(body,dict) else ''\n   result['failure_type']=next((kind for word,kind in [('rate limit','RATE_LIMIT'),('resource not accessible','PERMISSION_DENIED'),('bad credentials','AUTHENTICATION'),('not found','NOT_FOUND'),('validation failed','VALIDATION')] if word in message),'HTTP_ERROR')\n  result['safe_headers']={k:headers.get(k) for k in ('X-GitHub-Request-Id','X-RateLimit-Remaining','X-RateLimit-Reset','X-Accepted-GitHub-Permissions','Retry-After') if headers.get(k) is not None}\n except (TimeoutError,URLError) as error:\n  result.update(http_status=None,failure_type='TIMEOUT' if isinstance(error,TimeoutError) or isinstance(getattr(error,'reason',None),TimeoutError) else 'NETWORK',error_type=type(error).__name__)\n print('PROD_API_PROBE',json.dumps(result,sort_keys=True),flush=True)\nPY"
-        }
-      ]
     }
   }
 }
