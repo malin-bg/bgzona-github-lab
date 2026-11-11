@@ -75,15 +75,18 @@ def verify(api, source_run, relay_run, main_commit, *, running=False, pause=time
     """A wake is a hint; both Lab intake and PRIVATE writers independently verify it."""
     need(type(relay_run) is int and relay_run > 0 and proof.oid(main_commit), "RELAY_PIN")
     workflow, _ = get(api, "/actions/workflows/" + PATH.rsplit("/", 1)[1])
+    pending_handoff=(source_run,relay_run,main_commit,workflow["id"])==\
+        (43041234210,43041343158,"6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",411050691)
     if completed_recovery:
         need(not running and (source_run, relay_run, main_commit, workflow["id"]) in (
+             (43041234210,43041343158,"6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",411050691),
              (42852332535, 42852410172, "85f370875021e1b0dfd9315be63f4051b48d754f", 411050691),
              (CATCHUP_RUN, 42471208063, "7c15826ee3fd93dd327ae321970afe139ad71ffd", 411050691),
              (42525151296, 42528043016, "6dcd8139e7b603531ede09128dba8fd3637e0a1a", 411050691),
              (42622874725, 42622936493, "f8fdb186a2e31d5cd564b59ba6322dad1e26f542", 411050691)),
              "RELAY_RECOVERY_SCOPE")
     need(workflow["path"] == PATH and
-         workflow["state"] == ("disabled_manually" if completed_recovery else "active") and
+         workflow["state"] == ("disabled_manually" if completed_recovery and not pending_handoff else "active") and
          type(workflow["id"]) is int and workflow["id"] > 0, "RELAY_WORKFLOW")
     for attempt in range(21):
         row, _ = get(api, f"/actions/runs/{relay_run}/attempts/1")

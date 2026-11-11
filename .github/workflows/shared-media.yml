@@ -424,7 +424,7 @@
       "environment": "r18h-control"
     },
     "auto-intake": {
-      "if": "(github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || (inputs.source_run == '42852332535' && inputs.relay_run == '42852410172')) && inputs.private_run == '' && inputs.record_sha256 == ''))) || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625')",
+      "if": "(github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || ((inputs.source_run == '42852332535' && inputs.relay_run == '42852410172') || (inputs.source_run == '43041234210' && inputs.relay_run == '43041343158'))) && inputs.private_run == '' && inputs.record_sha256 == ''))) || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 120,
       "environment": "r18h-control",
@@ -459,7 +459,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_a.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",
+            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake"
           },
@@ -486,7 +486,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_b.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",
+            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",
@@ -508,7 +508,7 @@
       }
     },
     "auto-assets": {
-      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && ((github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || (inputs.source_run == '42852332535' && inputs.relay_run == '42852410172')) && inputs.private_run == '' && inputs.record_sha256 == '')) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true'))",
+      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && ((github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || ((inputs.source_run == '42852332535' && inputs.relay_run == '42852410172') || (inputs.source_run == '43041234210' && inputs.relay_run == '43041343158'))) && inputs.private_run == '' && inputs.record_sha256 == '')) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true'))",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 30,
       "environment": "r18h-assets",
@@ -554,7 +554,7 @@
       ]
     },
     "auto-dev": {
-      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && ((github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || (inputs.source_run == '42852332535' && inputs.relay_run == '42852410172')) && inputs.private_run == '' && inputs.record_sha256 == '')) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true')) && needs.auto-assets.result == 'success'",
+      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && ((github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42374329727' && inputs.relay_run == '42471208063') || ((inputs.source_run == '42852332535' && inputs.relay_run == '42852410172') || (inputs.source_run == '43041234210' && inputs.relay_run == '43041343158'))) && inputs.private_run == '' && inputs.record_sha256 == '')) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true') || (github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && inputs.mode == 'f1-resume' && inputs.source_run == '42525151296' && inputs.relay_run == '42528043016' && inputs.private_run == '42528096060' && inputs.record_sha256 == '7d6504d41eb420b7930253b9a7398679b595365290b0b48804ffa9a20e774625' && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true')) && needs.auto-assets.result == 'success'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 50,
       "permissions": {
@@ -602,7 +602,7 @@
       "environment": "r18h-control"
     },
     "auto-prod": {
-      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && (inputs.source_run == '42852332535' && inputs.relay_run == '42852410172'))) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true' && needs.auto-dev.result == 'success'",
+      "if": "always() && needs.auto-intake.result == 'success' && (needs.auto-continue.result == 'success' || needs.auto-continue.result == 'skipped') && github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.run_attempt == 1 && (inputs.mode == 'auto' || (inputs.mode == 'auto-resume' && ((inputs.source_run == '42852332535' && inputs.relay_run == '42852410172') || (inputs.source_run == '43041234210' && inputs.relay_run == '43041343158')))) && (needs.auto-continue.outputs.work || needs.auto-intake.outputs.work) == 'true' && needs.auto-dev.result == 'success'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 55,
       "permissions": {
@@ -728,7 +728,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_a.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",
+            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",
@@ -757,7 +757,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_b.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240",
+            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",

@@ -23,6 +23,7 @@ DEV='malin-bg/bgzona-win-dev'
 PROD='malin-bg/bgzona-win'
 PROD_ID=1128312231
 PROD_WORKFLOW=249807408
+PRIVATE_PREPARE_SECONDS=15*60  # matches only the PRIVATE prepare job budget
 STAGES=('refs/heads/r18h-staging-authority','refs/heads/r18h-staging-witness')
 CONTROL_REF='refs/heads/automation-control'
 RESUME_SOURCE_RUN=42194020254
@@ -495,7 +496,7 @@ def private_candidate(env, mode, source_run, previous, *, existing_run=None, c3=
             code=getattr(exc,'code',None)
             if code is not None:return code,None
             raise
-    row=wait_actions_run(read_run,run,'E4F_PRIVATE_RUN',PRIVATE_JOB_SECONDS)
+    row=wait_actions_run(read_run,run,'E4F_PRIVATE_RUN',PRIVATE_PREPARE_SECONDS if mode=='prepare' else PRIVATE_JOB_SECONDS)
     require((row['run_attempt'],row['workflow_id'],row['event'],row['head_sha'],
              row['head_branch'],row['repository']['id'],row['actor']['id'],
              row['path'].split('@',1)[0],row['display_title'])==

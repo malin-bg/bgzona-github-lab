@@ -674,6 +674,105 @@ def completed_writer(writer,current,history):
     print('AUTO_PREVIOUS_COMPLETED',prior['id'],recovered['id'],consumer['record_sha256'],cid,flush=True)
 
 
+
+# One explicitly authorized pending handoff. Positive evidence is required below;
+# the tuple alone is never sufficient to turn a cancelled prepare into SUCCESS.
+PENDING_RESUME = {'source': 43041234210, 'relay': 43041343158, 'failed': 43041382559, 'prepare': 43041590200, 'original_main': '6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240', 'source_sha': '622b44ae20f53bc6baca39e7b367ce1416fedd1e', 'owner_request': '6eff570e6342c53f035a94d11de19a42fba9f37cc25aaf41f3e80c5827da9c7b', 'derived_request': '03a06da36d1564c5306ceacd0a5cd87d40fdfd5bf21cfcd16e9f715c53d4cb12', 'ledger': '90430d4be6280869992dcff046a66ad079b44ebf', 'record': '2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b', 'registration': 'a4cca15a68018a12cf16580300e392a16c080afb', 'handoff': {'commit': 'ad47a9208ca6cf0f754bb6bd4505c3147759ef5d', 'parent': 'a4cca15a68018a12cf16580300e392a16c080afb', 'path': 'private-recovery/b82bae33f39010d59856343861c82df8e1885918a1ecbafc80b99c57106ff599/2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b/checkpoint.json', 'git_blob': '4a1e63576bc854d7628136a71823e01be40c8ddc', 'bytes': 70970, 'sha256': '15fcdcaaf251efe044dfae798e567603bca39e57aec687a3170993ac706bb302'}, 'registration_record': {'commit': 'a4cca15a68018a12cf16580300e392a16c080afb', 'parent': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'path': 'private-recovery/6a6fbd097829980c7cd98a5585f7907e222d8a1e078f1dd9719026c930323a26/9c3800f6936b9f2c7d61a69181539bcd5a5cef7f8d88cd64af9049461a37e4db/checkpoint.json', 'git_blob': '24af7b8d4430593b1d73122cf9f68eb6a0bb440a', 'bytes': 693, 'sha256': 'cd4665a91bac6176c86ac339bdf73a6ace4d1cee0f28edbaedaa1ea8b7f0c02a'}, 'recovery_before': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'automation_recovery': 'c17f66585857693305e24ccb78c5125c1f62210e', 'assets': 'ac94046822d9fba54f41141c8da1e304ea2c83a2', 'witness': 'f883b5e50661eae0dc251037ec49bd64e4ecc7b1', 'dev': 'b73031fa18b5d09e9104e568f56abd72b64e4f77', 'prod': '9b33037e78d26297912bbf2b57cca2f8662264ef', 'failed_code': '66d6d31b32f029284e23d3387916acb329972995', 'failed_number': 31}
+PENDING_855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243256 = "855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243"
+PENDING_TITLE = f"BGZONA auto-resume {PENDING_RESUME['source']}:{PENDING_RESUME['relay']}"
+
+
+def pending_record(api, expected):
+    import base64
+    from hashlib import sha1
+    meta,more=api.get('/git/commits/'+expected['commit'])
+    require(not more and meta['sha']==expected['commit'] and
+            [p['sha'] for p in meta['parents']]==[expected['parent']], 'PENDING_ANCESTRY')
+    obj,more=api.get('/contents/'+expected['path']+'?ref='+expected['commit'])
+    require(not more and (obj['type'],obj['path'],obj['encoding'],obj['sha'],obj['size'])==
+            ('file',expected['path'],'base64',expected['git_blob'],expected['bytes']), 'PENDING_OBJECT')
+    raw=base64.b64decode(''.join(obj['content'].splitlines()),validate=True)
+    require(len(raw)==expected['bytes'] and digest(raw)==expected['sha256'] and
+            sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==expected['git_blob'], 'PENDING_BYTES')
+    return parse(raw)
+
+
+def pending_failed(api=None):
+    """Authenticate the original pre-CAS failure, not a general failed-writer exemption."""
+    a=PENDING_RESUME
+    require(digest(data(a))==PENDING_855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243256,'PENDING_AUTHORIZATION')
+    row=public(f"/actions/runs/{a['failed']}/attempts/1")
+    require((row['id'],row['workflow_id'],row['run_number'],row['run_attempt'],row['event'],
+             row['repository']['id'],row['actor']['id'],row.get('triggering_actor',row['actor'])['id'],
+             row['head_sha'],row['head_branch'],row['path'].split('@',1)[0],row['display_title'],row['status'],row['conclusion'])==
+            (a['failed'],CONTROL_WORKFLOW,a['failed_number'],1,'workflow_dispatch',CONTROL_ID,DISPATCH_ACTOR,DISPATCH_ACTOR,
+             a['failed_code'],'automation-control','.github/workflows/shared-media.yml',
+             f"BGZONA auto {a['source']}:{a['relay']}",'completed','failure'),'PENDING_FAILED_IDENTITY')
+    jobs=public(f"/actions/runs/{a['failed']}/attempts/1/jobs?per_page=100")
+    require(jobs['total_count']==len(jobs['jobs']) and
+            [(j['name'],j['conclusion']) for j in jobs['jobs'] if j['name']=='auto-intake']==[('auto-intake','failure')] and
+            all(j['conclusion']=='skipped' for j in jobs['jobs'] if j['name']!='auto-intake'), 'PENDING_PRE_CAS_JOB')
+    require({j['name'] for j in jobs['jobs']}=={'auto-intake', 'ledger-accept', 'c3-intake', 'ledger-read', 'c3-dev', 'auto-prod', 'auto-assets', 'auto-dev', 'prod-only', 'project', 'assets', 'auto-continue', 'public-read', 'c3-assets', 'private-prepare'} and len({j['name'] for j in jobs['jobs']})==len(jobs['jobs']) and all(j['run_id']==a['failed'] and j['head_sha']==a['failed_code'] and j['status']=='completed' for j in jobs['jobs']),'PENDING_JOB_HISTORY')
+    if api is not None:
+        stopped,more=api.get(f"/actions/runs/{a['prepare']}/attempts/1")
+        require(not more and (stopped['id'],stopped['workflow_id'],stopped['run_attempt'],stopped['repository']['id'],
+                stopped['actor']['id'],stopped.get('triggering_actor',stopped['actor'])['id'],stopped['head_sha'],stopped['head_branch'],
+                stopped['event'],stopped['path'].split('@',1)[0],stopped['display_title'],stopped['status'],stopped['conclusion'])==
+                (a['prepare'],408733317,1,standard.PIN.numeric_id,353092585,353092585,a['original_main'],'main',
+                 'workflow_dispatch','.github/workflows/e4f-standard-prepare.yml',f"R18H prepare {a['source']}",'completed','cancelled'),
+                'PENDING_PREPARE_IDENTITY')
+        artifacts,more=api.get(f"/actions/runs/{a['prepare']}/artifacts?per_page=100")
+        require(not more and artifacts['total_count']==len(artifacts['artifacts'])==0,'PENDING_ARTIFACTS')
+    return row
+
+
+def pending_initial(api):
+    """Fresh exact pre-write checkpoint; only used before the first continuation."""
+    a=PENDING_RESUME
+    pending_failed(api)
+    for branch,wanted in [('cp2b-private-standard-source-r1',a['source_sha']),
+                          ('cp2b-private-standard-recovery-c2',a['handoff']['commit']),
+                          ('automation-recovery',a['automation_recovery'])]:
+        ref,more=api.get('/git/ref/heads/'+branch)
+        require(not more and ref['ref']=='refs/heads/'+branch and
+                ref['object']==dict(type='commit',sha=wanted),'PENDING_REF_MOVED')
+    for repo,ref,wanted in [(CONTROL,'heads/automation-ledger',a['ledger']),
+            (ASSETS,'heads/main',a['assets']),(ASSETS,'bgzona/witness',a['witness']),
+            ('malin-bg/bgzona-win-dev','heads/main',a['dev']),('malin-bg/bgzona-win','heads/main',a['prod'])]:
+        status,got=github('/repos/'+repo+'/git/ref/'+ref,standard.lab_read_token())
+        require(status==200 and got['object']==dict(type='commit',sha=wanted),'PENDING_PUBLIC_REF_MOVED')
+    registered=pending_record(api,a['registration_record']);packet=pending_record(api,a['handoff'])
+    require(registered['rows']==[[7,a['owner_request'],packet['binding']['raw_parent'],a['source_sha']]] and
+            registered['facts']['run']==a['source'] and packet['binding']['owner_request_sha256']==a['owner_request'] and
+            packet['binding']['raw_source']==a['source_sha'] and packet['binding']['derived_request_sha256']==a['derived_request'] and
+            packet['before']['ledger_record_sha256']==a['record'],'PENDING_REQUEST_BINDING')
+    # Any guard since the owner source, including a late/unknown one, is a STOP.
+    from urllib.parse import quote
+    created=quote('>='+public(f"/actions/runs/{a['failed']}/attempts/1")['created_at'],safe='')
+    for workflow in (408733315,408733314):
+        history,more=api.get(f'/actions/workflows/{workflow}/runs?created={created}&per_page=100')
+        require(not more and history['total_count']==len(history['workflow_runs'])==0,'PENDING_GUARD_UNKNOWN')
+    return packet
+
+
+def pending_private(view,reg,context,expected,source):
+    a=PENDING_RESUME
+    require(expected==a['owner_request'] and source==a['source_sha'] and view.pending_handoff is not None,'PENDING_HANDOFF_REQUIRED')
+    row,payload,path,_=view.pending_handoff
+    require(tuple(row)==(7,expected,'e7b49d75fdd2028f9dc32ea1ce8a44f6e9fd9d54',source) and
+            path==a['handoff']['path'] and len(payload)==a['handoff']['bytes'] and digest(payload)==a['handoff']['sha256'],
+            'PENDING_HANDOFF_PIN')
+    records=context['records']
+    require(len(records)>=13 and digest(data(records[12]))==a['record'],'PENDING_D3_PREFIX')
+    if len(records)==13:
+        require(context['tip']==a['ledger'] and reg.provider.recovery_head()==a['handoff']['commit'],'PENDING_REF_MOVED')
+    else:
+        from request_executor import binding
+        for record in records[13:]:
+            bound=binding(context['recovered'],record['primary_main'])
+            require(bound is not None and bound['request']==a['derived_request'],'PENDING_FOREIGN_ACCEPTANCE')
+
+
 def control_run(run, source=None, relay=None, *, private_api=None, private_main=None):
     row = public(f"/actions/runs/{run}/attempts/1")
     ref = public("/git/ref/heads/automation-control")
@@ -690,6 +789,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     if m1:
         require(row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"M1_CONTROL_OWNER")
         m1_failed()
+    pending_resume=title==PENDING_TITLE
     p4=title==P4_TITLE
     recovering = title.startswith("BGZONA auto-resume ")
     f1 = title.startswith(F1_PREFIX)
@@ -698,7 +798,10 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
         require(title==F1_TITLE and row["run_number"]==F1_NUMBER and
                 row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"F1_CONTROL_SCOPE")
         f1_failed(private_api)
-    if recovering:
+    if pending_resume:
+        pending_prior=pending_failed(private_api)
+        require(row["run_number"]==pending_prior["run_number"]+1,"PENDING_SINGLE_RUN")
+    if recovering and not pending_resume:
         require(title == (P4_TITLE if p4 else RECOVERY_TITLE) and row["run_number"] == (P4_NUMBER if p4 else RECOVERY_NUMBER) and
                 row.get("triggering_actor", row["actor"])["id"] == DISPATCH_ACTOR,"AUTO_RECOVERY_SCOPE")
         p4_failed() if p4 else recovery_failed()
@@ -709,7 +812,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             (relay is None or relay == linked_relay), "AUTO_RELAY_LINK")
     if private_api is not None:
         verified = push_relay.verify(private_api, linked_source, linked_relay,
-                                     M1_PRIVATE if m1 else (F1_ORIGIN_MAIN if f1 else (P4_ORIGIN_MAIN if p4 else (RECOVERY_RELAY_MAIN if recovering else private_main))),
+                                     PENDING_RESUME["original_main"] if pending_resume else (M1_PRIVATE if m1 else (F1_ORIGIN_MAIN if f1 else (P4_ORIGIN_MAIN if p4 else (RECOVERY_RELAY_MAIN if recovering else private_main)))),
                                      completed_recovery=(recovering or f1 or m1))
         row = row | {"source_sha": verified["head_sha"]}
     else:
@@ -733,7 +836,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
-                not (recovering and r["id"] == (P4_FAILED if p4 else RECOVERY_FAILED)) and
+                not (recovering and r["id"] == (PENDING_RESUME["failed"] if pending_resume else (P4_FAILED if p4 else RECOVERY_FAILED))) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
                 not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
     if m1:
@@ -745,7 +848,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                 len(failed)==1 and failed[0]["conclusion"]=="failure" and failed[0]["run_attempt"]==1 and
                 all(r["id"]==run or r["run_number"]<F1_NUMBER for r in history["workflow_runs"]),
                 "F1_CONTROL_HISTORY")
-    if recovering:
+    if recovering and not pending_resume:
         failed = [r for r in history["workflow_runs"] if r["id"] == (P4_FAILED if p4 else RECOVERY_FAILED)]
         require(history["total_count"] == len(history["workflow_runs"]) == (P4_NUMBER if p4 else RECOVERY_NUMBER) and
                 len(failed) == 1 and failed[0]["conclusion"] == "failure" and
@@ -756,7 +859,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             "AUTO_HISTORY_WINDOW")
     if previous:
         writer=max(previous,key=lambda r:r["run_number"])
-        if writer['conclusion']!='success':completed_writer(writer,row,history)
+        if writer['conclusion']!='success':completed_writer(writer,pending_prior if pending_resume else row,history)
     # A failed repeatable read does not imply an unfinished writer. Mixed consumers
     # remain unresolved until a later positive read-only proof; live proof is also
     # required at the authenticated final D3 boundary before new registration/CAS.
@@ -769,7 +872,7 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             protection["conditions"]["ref_name"]["include"]==[CONTROL_REF] and
             protection["conditions"]["ref_name"]["exclude"]==[],"AUTO_CONTROL_PROTECTION")
     require(public("/git/ref/heads/automation-control")==ref,"AUTO_CONTROL_REF_MOVED")
-    return row
+    return row | {"pending_resume":pending_resume}
 
 
 def consumer_history(rows):
@@ -798,7 +901,7 @@ def context(env):
     recovering = params["mode"] == "auto-resume"
     f1 = params["mode"]=="f1-resume"
     require(not f1 or (source,relay)==(42525151296,42528043016),"F1_CONTROL_INPUT")
-    require(not recovering or (source, relay) in ((push_relay.CATCHUP_RUN, RECOVERY_RELAY),(P4_SOURCE,P4_RELAY)),
+    require(not recovering or (source, relay) in ((push_relay.CATCHUP_RUN, RECOVERY_RELAY),(P4_SOURCE,P4_RELAY),(PENDING_RESUME["source"],PENDING_RESUME["relay"])),
             "AUTO_RECOVERY_SCOPE")
     phase = 'prod' if env.get('GITHUB_JOB')=='auto-prod' else env['AUTO_PHASE']
     require(phase!='prod' or env['AUTO_PHASE']=='dev','PROD_READ_ROLE')
@@ -812,7 +915,7 @@ def context(env):
             row["display_title"].startswith(F1_PREFIX)==f1, "AUTO_WORKER_PIN")
     if f1 and phase=="intake":
         f1_initial(api,env["PRIVATE_WORKFLOW_COMMIT"])
-    if recovering and phase == "intake":
+    if recovering and phase == "intake" and (source,relay)!=(PENDING_RESUME["source"],PENDING_RESUME["relay"]):
         (p4_initial if (source,relay)==(P4_SOURCE,P4_RELAY) else recovery_initial)(api, env["PRIVATE_WORKFLOW_COMMIT"])
     return params | ({"source_sha":row["source_sha"]} if phase == "intake" else {})
 
@@ -1067,7 +1170,7 @@ def private_prepare(env):
             params["source_run"].isdigit() and params["control_run"].isdigit(),"AUTO_PREPARE_INPUT")
     run=int(params["source_run"])
     standard.verified_dispatch(api,env,".github/workflows/e4f-standard-prepare.yml",run,normal=True)
-    control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
+    admitted=control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
     lab=Lab.create(Path(env["RUNNER_TEMP"])/"auto-private")
     pins=parse(standard.BOOTSTRAP.read_bytes())
     domain=standard.public_baseline(lab,pins,normal=True)
@@ -1082,12 +1185,16 @@ def private_prepare(env):
                              reg.queue.source_reader._commit("intake",source)[1][0],source)
     if pending:
         require(pending[0][1]==expected,"AUTO_FIFO_CONFLICT")
-    reg=standard.register_chained(reg,client,factory,run,1)
-    view=independent_prefix(reg,domain)
+    if not admitted["pending_resume"]:
+        reg=standard.register_chained(reg,client,factory,run,1)
+        view=independent_prefix(reg,domain)
     rows=reg.verify()
     require(rows and rows[0][1]==expected,"AUTO_ALREADY_ACCEPTED")
     context=domain.read()
     mirror=digest(data(context["latest"]))
+    if admitted["pending_resume"]:
+        require(run==PENDING_RESUME["source"],"PENDING_SOURCE_RUN")
+        pending_private(view,reg,context,expected,source)
     if view.pending_handoff is not None:
         row,payload,path,restored=view.pending_handoff
         require(tuple(row)==rows[0],"AUTO_FIFO_CONFLICT")
@@ -1124,6 +1231,8 @@ def private_prepare(env):
         require(observed["parents"]==[parent] and observed["files"].get(pin.path)==payload,
                 "AUTO_HANDOFF_READBACK")
         require(factories(clients(head)).restore()==pinned.verify(),"AUTO_HANDOFF_REGISTRATION")
+    if admitted["pending_resume"]:
+        require((head,parent)==(PENDING_RESUME["handoff"]["commit"],PENDING_RESUME["registration"]),"PENDING_HANDOFF_ANCESTRY")
     handoff=dict(request=pin.request,mirror=pin.mirror,sha256=pin.sha256,size=pin.size,head=head,parent=parent)
     standard.produce_candidate(domain,operation,context,pins["witness"],run,handoff,
                                Path(env["RUNNER_TEMP"])/"r18h-candidate")
@@ -1141,10 +1250,13 @@ def private_guard(env):
     mode=params["mode"]
     path=".github/workflows/e4f-d3-guard"+("-observe" if mode=="observe" else "")+".yml"
     standard.verified_dispatch(api,env,path,None,normal=True)
-    control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
+    admitted=control_run(int(params["control_run"]), private_api=api, private_main=env["GITHUB_WORKFLOW_SHA"])
     item=standard.proposal(params["record_sha256"],normal=True)
     require(item["ledger_parent"]==params["ledger_parent"],"AUTO_GUARD_LEDGER")
     p=item["handoff"]
+    if admitted["pending_resume"]:
+        a=PENDING_RESUME
+        require(item["source_run"]==a["source"] and p==dict(request=a["owner_request"],mirror=a["record"],sha256=a["handoff"]["sha256"],size=a["handoff"]["bytes"],head=a["handoff"]["commit"],parent=a["registration"]),"PENDING_GUARD_SCOPE")
     require(set(p)=={"request","mirror","sha256","size","head","parent"},"AUTO_GUARD_HANDOFF")
     pin=gb.StandardHandoffPin(*(p[k] for k in ("request","mirror","sha256","size")))
     lab=Lab.create(Path(env["RUNNER_TEMP"])/"auto-guard")
@@ -1473,6 +1585,11 @@ def one_transition(env,params,pins,control):
         run=last_run
         if bound['final']:
             transition_outputs(env,item,bound,run,0);return
+    elif params["mode"]=="auto-resume" and (params["source_run"],params["relay_run"])==(str(PENDING_RESUME["source"]),str(PENDING_RESUME["relay"])):
+        require(state["tip"]==PENDING_RESUME["ledger"] and digest(data(latest))==PENDING_RESUME["record"] and bound["final"] and bound["phase"]=="staged","PENDING_INITIAL_PREFIX")
+        pending_initial(api)
+        control.ensure_current_public(env,item)
+        run=PENDING_RESUME["source"]
     elif p4:
         require(last_run==P4_SOURCE and latest['index']==10 and digest(data(latest))==P4_RECORD10 and
                 state['tip']==P4_PREFIX and (bound['request'],bound['plan'],bound['step'],bound['steps'],bound['phase'],bound['final'])==
