@@ -677,8 +677,8 @@ def completed_writer(writer,current,history):
 
 # One explicitly authorized pending handoff. Positive evidence is required below;
 # the tuple alone is never sufficient to turn a cancelled prepare into SUCCESS.
-PENDING_RESUME = {'source': 43041234210, 'relay': 43041343158, 'failed': 43041382559, 'prepare': 43041590200, 'original_main': '6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240', 'source_sha': '622b44ae20f53bc6baca39e7b367ce1416fedd1e', 'owner_request': '6eff570e6342c53f035a94d11de19a42fba9f37cc25aaf41f3e80c5827da9c7b', 'derived_request': '03a06da36d1564c5306ceacd0a5cd87d40fdfd5bf21cfcd16e9f715c53d4cb12', 'ledger': '90430d4be6280869992dcff046a66ad079b44ebf', 'record': '2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b', 'registration': 'a4cca15a68018a12cf16580300e392a16c080afb', 'handoff': {'commit': 'ad47a9208ca6cf0f754bb6bd4505c3147759ef5d', 'parent': 'a4cca15a68018a12cf16580300e392a16c080afb', 'path': 'private-recovery/b82bae33f39010d59856343861c82df8e1885918a1ecbafc80b99c57106ff599/2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b/checkpoint.json', 'git_blob': '4a1e63576bc854d7628136a71823e01be40c8ddc', 'bytes': 70970, 'sha256': '15fcdcaaf251efe044dfae798e567603bca39e57aec687a3170993ac706bb302'}, 'registration_record': {'commit': 'a4cca15a68018a12cf16580300e392a16c080afb', 'parent': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'path': 'private-recovery/6a6fbd097829980c7cd98a5585f7907e222d8a1e078f1dd9719026c930323a26/9c3800f6936b9f2c7d61a69181539bcd5a5cef7f8d88cd64af9049461a37e4db/checkpoint.json', 'git_blob': '24af7b8d4430593b1d73122cf9f68eb6a0bb440a', 'bytes': 693, 'sha256': 'cd4665a91bac6176c86ac339bdf73a6ace4d1cee0f28edbaedaa1ea8b7f0c02a'}, 'recovery_before': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'automation_recovery': 'c17f66585857693305e24ccb78c5125c1f62210e', 'assets': 'ac94046822d9fba54f41141c8da1e304ea2c83a2', 'witness': 'f883b5e50661eae0dc251037ec49bd64e4ecc7b1', 'dev': 'b73031fa18b5d09e9104e568f56abd72b64e4f77', 'prod': '9b33037e78d26297912bbf2b57cca2f8662264ef', 'failed_code': '66d6d31b32f029284e23d3387916acb329972995', 'failed_number': 31}
-PENDING_855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243256 = "855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243"
+PENDING_RESUME = {'source': 43041234210, 'relay': 43041343158, 'failed': 43041382559, 'prepare': 43041590200, 'original_main': '6cfb52e6b6c3a3799e0110b8dfd9f4c44be0e240', 'source_sha': '622b44ae20f53bc6baca39e7b367ce1416fedd1e', 'owner_request': '6eff570e6342c53f035a94d11de19a42fba9f37cc25aaf41f3e80c5827da9c7b', 'derived_request': '03a06da36d1564c5306ceacd0a5cd87d40fdfd5bf21cfcd16e9f715c53d4cb12', 'ledger': '90430d4be6280869992dcff046a66ad079b44ebf', 'record': '2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b', 'registration': 'a4cca15a68018a12cf16580300e392a16c080afb', 'handoff': {'commit': 'ad47a9208ca6cf0f754bb6bd4505c3147759ef5d', 'parent': 'a4cca15a68018a12cf16580300e392a16c080afb', 'path': 'private-recovery/b82bae33f39010d59856343861c82df8e1885918a1ecbafc80b99c57106ff599/2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b/checkpoint.json', 'git_blob': '4a1e63576bc854d7628136a71823e01be40c8ddc', 'bytes': 70970, 'sha256': '15fcdcaaf251efe044dfae798e567603bca39e57aec687a3170993ac706bb302'}, 'registration_record': {'commit': 'a4cca15a68018a12cf16580300e392a16c080afb', 'parent': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'path': 'private-recovery/6a6fbd097829980c7cd98a5585f7907e222d8a1e078f1dd9719026c930323a26/9c3800f6936b9f2c7d61a69181539bcd5a5cef7f8d88cd64af9049461a37e4db/checkpoint.json', 'git_blob': '24af7b8d4430593b1d73122cf9f68eb6a0bb440a', 'bytes': 693, 'sha256': 'cd4665a91bac6176c86ac339bdf73a6ace4d1cee0f28edbaedaa1ea8b7f0c02a'}, 'recovery_before': 'c7cedbd9a362adbab17faade3fc0dfeaa513ae39', 'automation_recovery': 'c17f66585857693305e24ccb78c5125c1f62210e', 'assets': 'ac94046822d9fba54f41141c8da1e304ea2c83a2', 'witness': 'f883b5e50661eae0dc251037ec49bd64e4ecc7b1', 'dev': 'b73031fa18b5d09e9104e568f56abd72b64e4f77', 'prod': '9b33037e78d26297912bbf2b57cca2f8662264ef', 'failed_code': '66d6d31b32f029284e23d3387916acb329972995', 'failed_number': 31, 'precas_failure': {'run': 43079204141, 'number': 32, 'code': '40a1370498598da519e97094c37922ec9f20df00', 'job': 130726983428, 'created_at': '2026-11-11T18:35:22Z', 'updated_at': '2026-11-11T18:36:21Z', 'log_sha256': 'e7daa60b4bfc06d9cfd39ba1fb84eacd987ac1d2e0146826b54baa331f436974'}}
+PENDING_855f41ba7f962f5c6cafa5dcbb0421ac582941a6e905de99f482a2a82fe70243256 = "d54302d63a8c642e3b227f9238efdf34350d228dab797d198c0fcf334a410e60"
 PENDING_TITLE = f"BGZONA auto-resume {PENDING_RESUME['source']}:{PENDING_RESUME['relay']}"
 
 
@@ -713,6 +713,31 @@ def pending_failed(api=None):
             [(j['name'],j['conclusion']) for j in jobs['jobs'] if j['name']=='auto-intake']==[('auto-intake','failure')] and
             all(j['conclusion']=='skipped' for j in jobs['jobs'] if j['name']!='auto-intake'), 'PENDING_PRE_CAS_JOB')
     require({j['name'] for j in jobs['jobs']}=={'auto-intake', 'ledger-accept', 'c3-intake', 'ledger-read', 'c3-dev', 'auto-prod', 'auto-assets', 'auto-dev', 'prod-only', 'project', 'assets', 'auto-continue', 'public-read', 'c3-assets', 'private-prepare'} and len({j['name'] for j in jobs['jobs']})==len(jobs['jobs']) and all(j['run_id']==a['failed'] and j['head_sha']==a['failed_code'] and j['status']=='completed' for j in jobs['jobs']),'PENDING_JOB_HISTORY')
+    f=a['precas_failure']
+    failed=public(f"/actions/runs/{f['run']}/attempts/1")
+    require((failed['id'],failed['workflow_id'],failed['run_number'],failed['run_attempt'],failed['event'],
+             failed['repository']['id'],failed['actor']['id'],failed.get('triggering_actor',failed['actor'])['id'],
+             failed['head_sha'],failed['head_branch'],failed['path'].split('@',1)[0],failed['display_title'],
+             failed['status'],failed['conclusion'],failed['created_at'],failed['updated_at'])==
+            (f['run'],CONTROL_WORKFLOW,f['number'],1,'workflow_dispatch',CONTROL_ID,DISPATCH_ACTOR,DISPATCH_ACTOR,
+             f['code'],'automation-control','.github/workflows/shared-media.yml',PENDING_TITLE,
+             'completed','failure',f['created_at'],f['updated_at']) and row['updated_at']<=failed['created_at'],
+            'PENDING_PRE_CAS_IDENTITY')
+    stopped_jobs=public(f"/actions/runs/{f['run']}/attempts/1/jobs?per_page=100")
+    require(stopped_jobs['total_count']==len(stopped_jobs['jobs'])==len(jobs['jobs']) and
+            {j['name'] for j in stopped_jobs['jobs']}=={j['name'] for j in jobs['jobs']} and
+            len({j['name'] for j in stopped_jobs['jobs']})==len(stopped_jobs['jobs']) and
+            [(j['id'],j['conclusion']) for j in stopped_jobs['jobs'] if j['name']=='auto-intake']==[(f['job'],'failure')] and
+            all(j['name']=='auto-intake' or j['conclusion']=='skipped' for j in stopped_jobs['jobs']) and
+            all((j['run_id'],j['head_sha'],j['status'],j['run_attempt'])==
+                (f['run'],f['code'],'completed',1) for j in stopped_jobs['jobs']), 'PENDING_PRE_CAS_JOBS')
+    if api is not None:
+        from urllib.parse import quote
+        window=quote(f['created_at']+'..'+f['updated_at'],safe='')
+        for workflow in (408733317,408733315,408733314):
+            history,more=api.get(f'/actions/workflows/{workflow}/runs?created={window}&per_page=100')
+            require(more is False and type(history) is dict and history.get('total_count')==0 and
+                    history.get('workflow_runs')==[], 'PENDING_PRE_CAS_PRIVATE_HISTORY')
     if api is not None:
         stopped,more=api.get(f"/actions/runs/{a['prepare']}/attempts/1")
         require(not more and (stopped['id'],stopped['workflow_id'],stopped['run_attempt'],stopped['repository']['id'],
@@ -734,13 +759,18 @@ def pending_initial(api):
                           ('cp2b-private-standard-recovery-c2',a['handoff']['commit']),
                           ('automation-recovery',a['automation_recovery'])]:
         ref,more=api.get('/git/ref/heads/'+branch)
-        require(not more and ref['ref']=='refs/heads/'+branch and
-                ref['object']==dict(type='commit',sha=wanted),'PENDING_REF_MOVED')
+        require(more is False and type(ref) is dict and ref.get('ref')=='refs/heads/'+branch and
+                type(ref.get('object')) is dict and ref['object'].get('type')=='commit' and
+                ref['object'].get('sha')==wanted and
+                ('url' not in ref['object'] or type(ref['object']['url']) is str),'PENDING_REF_MOVED')
     for repo,ref,wanted in [(CONTROL,'heads/automation-ledger',a['ledger']),
             (ASSETS,'heads/main',a['assets']),(ASSETS,'bgzona/witness',a['witness']),
             ('malin-bg/bgzona-win-dev','heads/main',a['dev']),('malin-bg/bgzona-win','heads/main',a['prod'])]:
         status,got=github('/repos/'+repo+'/git/ref/'+ref,standard.lab_read_token())
-        require(status==200 and got['object']==dict(type='commit',sha=wanted),'PENDING_PUBLIC_REF_MOVED')
+        require(status==200 and type(got) is dict and got.get('ref')=='refs/'+ref and
+                type(got.get('object')) is dict and got['object'].get('type')=='commit' and
+                got['object'].get('sha')==wanted and
+                ('url' not in got['object'] or type(got['object']['url']) is str),'PENDING_PUBLIC_REF_MOVED')
     registered=pending_record(api,a['registration_record']);packet=pending_record(api,a['handoff'])
     require(registered['rows']==[[7,a['owner_request'],packet['binding']['raw_parent'],a['source_sha']]] and
             registered['facts']['run']==a['source'] and packet['binding']['owner_request_sha256']==a['owner_request'] and
@@ -800,7 +830,8 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
         f1_failed(private_api)
     if pending_resume:
         pending_prior=pending_failed(private_api)
-        require(row["run_number"]==pending_prior["run_number"]+1,"PENDING_SINGLE_RUN")
+        require(row["run_number"]==PENDING_RESUME["precas_failure"]["number"]+1 and
+                PENDING_RESUME["precas_failure"]["updated_at"]<=row["created_at"],"PENDING_SINGLE_RUN")
     if recovering and not pending_resume:
         require(title == (P4_TITLE if p4 else RECOVERY_TITLE) and row["run_number"] == (P4_NUMBER if p4 else RECOVERY_NUMBER) and
                 row.get("triggering_actor", row["actor"])["id"] == DISPATCH_ACTOR,"AUTO_RECOVERY_SCOPE")
@@ -829,14 +860,20 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
             {r['run_number'] for r in history['workflow_runs']}==set(range(1,row['run_number']+1)),
             'AUTO_HISTORY_GAP')
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
-    require((len(hits)==1 or m1 and len(hits)==5 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED}) and
+    require((len(hits)==1 and not pending_resume or pending_resume and len(hits)==2 and
+             {r["id"] for r in hits}=={run,PENDING_RESUME["precas_failure"]["run"]} and
+             all((r["run_number"],r["head_sha"],r["status"],r["conclusion"])==
+                 (PENDING_RESUME["precas_failure"]["number"],PENDING_RESUME["precas_failure"]["code"],"completed","failure")
+                 for r in hits if r["id"]!=run) or
+             m1 and len(hits)==5 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED}) and
             max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
             "AUTO_REPLAY_OR_CONCURRENT")
     for other in history["workflow_runs"]:
         require(other["id"]==run or other["status"]=="completed", "AUTO_CONCURRENT")
     previous = [r for r in history["workflow_runs"] if r["id"] != run and
                 r.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)) and
-                not (recovering and r["id"] == (PENDING_RESUME["failed"] if pending_resume else (P4_FAILED if p4 else RECOVERY_FAILED))) and
+                not (pending_resume and r["id"] in (PENDING_RESUME["failed"],PENDING_RESUME["precas_failure"]["run"])) and
+                not (recovering and not pending_resume and r["id"] == (P4_FAILED if p4 else RECOVERY_FAILED)) and
                 not (f1 and r["id"] == F1_FAILED_LAB) and
                 not (m1 and r["id"] in (M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED))]
     if m1:

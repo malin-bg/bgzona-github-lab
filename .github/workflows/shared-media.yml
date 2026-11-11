@@ -459,7 +459,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_a.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
+            "PRIVATE_WORKFLOW_COMMIT": "dee27396051e30dd310befea6effb581cfe98d7f",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake"
           },
@@ -486,7 +486,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_b.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
+            "PRIVATE_WORKFLOW_COMMIT": "dee27396051e30dd310befea6effb581cfe98d7f",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",
@@ -728,7 +728,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_a.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
+            "PRIVATE_WORKFLOW_COMMIT": "dee27396051e30dd310befea6effb581cfe98d7f",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",
@@ -757,7 +757,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "PRIVATE_ACTIONS_TOKEN": "${{ steps.private_b.outputs.token }}",
-            "PRIVATE_WORKFLOW_COMMIT": "56096593f807b61e2d2127e181dbe509f286648b",
+            "PRIVATE_WORKFLOW_COMMIT": "dee27396051e30dd310befea6effb581cfe98d7f",
             "PRIVATE_DISPATCH_ACTOR": "353092585",
             "AUTO_PHASE": "intake",
             "AUTO_CONTINUATION": "true",
