@@ -380,15 +380,311 @@ def is_auto_control(run):
     row = public(f"/actions/runs/{run}/attempts/1")
     return row.get("display_title", "").startswith(("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX))
 
+# Read-only completion evidence. It grants no registration, guard or CAS authority.
+PROD_REPO = "malin-bg/bgzona-win"
+PROD_REPOSITORY_ID = 1128312231
+PROD_WORKFLOW_ID = 249807408
+PROD_ROLE = "${{ inputs.mode == 'prod' && 'true' || 'false' }}"
+WRITER_PREFIXES = ("BGZONA auto ", "BGZONA auto-resume ", F1_PREFIX)
+
+
+def workflow_history(repo, workflow, *, lab=False):
+    """Read a complete bounded history, refusing moving/duplicate/incomplete pages."""
+    rows=[];total=None
+    for page in range(1,11):
+        suffix=f"/actions/workflows/{workflow}/runs?per_page=100&page={page}"
+        if lab:packet=public(suffix)
+        else:
+            status,packet=github('/repos/'+repo+suffix)
+            require(status==200 and type(packet) is dict,'AUTO_COMPLETION_HISTORY_API')
+        count=packet.get('total_count');part=packet.get('workflow_runs')
+        require(type(count) is int and 0<=count<=1000 and type(part) is list and len(part)<=100 and
+                (total is None or total==count),'AUTO_COMPLETION_HISTORY')
+        total=count;rows.extend(part)
+        require(len(rows)<=total and len({r['id'] for r in rows})==len(rows) and
+                len({r['run_number'] for r in rows})==len(rows),'AUTO_COMPLETION_HISTORY')
+        if len(rows)==total:return dict(total_count=total,workflow_runs=rows)
+        require(len(part)==100,'AUTO_COMPLETION_HISTORY')
+    raise ProviderStop('AUTO_COMPLETION_HISTORY')
+
+
+def consumer_workflow(repo,commit,token=None):
+    """Existing immutable workflow/blob identity check, shared with PRIVATE reads."""
+    import base64
+    from hashlib import sha1
+    require(repo in (CONTROL,PROD_REPO) and gb.oid(commit),'PROD_CODE_PIN')
+    path='.github/workflows/shared-media.yml' if repo==CONTROL else '.github/workflows/hugo.yml'
+    status,row=github('/repos/'+repo+'/contents/'+path+'?ref='+commit,token)
+    require(status==200 and (row['type'],row['path'],row['encoding'])==('file',path,'base64') and
+            0<row['size']<=128000,'PROD_CODE_BLOB')
+    raw=base64.b64decode(''.join(row['content'].splitlines()),validate=True)
+    require(len(raw)==row['size'] and sha1(f"blob {len(raw)}\0".encode()+raw).hexdigest()==row['sha'],'PROD_CODE_BLOB')
+    return parse(raw)
+
+
+def prod_consumer(row):
+    """Classify only authenticated consumer jobs; never treat FAILURE as SUCCESS."""
+    token=standard.lab_read_token();root='/repos/'+CONTROL
+    status,run=github(root+f"/actions/runs/{row['id']}/attempts/1",token)
+    require(status==200 and (run['id'],run['workflow_id'],run['run_number'],run['run_attempt'],run['event'],
+            run['repository']['id'],run['actor']['id'],run['head_branch'],run['path'].split('@',1)[0],
+            run['head_sha'],run['status'],run['conclusion'],run['display_title'])==
+            (row['id'],CONTROL_WORKFLOW,row['run_number'],1,'workflow_dispatch',CONTROL_ID,DISPATCH_ACTOR,
+             'automation-control','.github/workflows/shared-media.yml',row['head_sha'],'completed',row['conclusion'],row['display_title']) and
+            run.get('triggering_actor',run['actor'])['id']==DISPATCH_ACTOR and
+            run['conclusion'] in ('success','failure') and run['display_title'].startswith('BGZONA prod '),'PROD_CONSUMER_IDENTITY')
+    label=run['display_title'][12:];complete=label.endswith(':complete');record=label.removesuffix(':complete')
+    require(gb.sha(record),'PROD_CONSUMER_IDENTITY')
+    workflow=consumer_workflow(CONTROL,run['head_sha'],token);job=workflow['jobs']['prod-only']
+    require(job['permissions']==dict(contents='read',actions='read') and job['environment']=='r18h-control','PROD_CONSUMER_PERMISSIONS')
+    app,=[s['with'] for s in job['steps'] if s.get('id')=='prod-app']
+    require(app['repositories']=='bgzona-win' and app['permission-actions']=='write' and
+            not any(k.startswith('permission-') and k!='permission-actions' for k in app),'PROD_CONSUMER_PERMISSIONS')
+    pin,=[s['env']['PROD_WORKFLOW_COMMIT'] for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
+    require(gb.oid(pin),'PROD_CONSUMER_PIN')
+    status,jobs=github(root+f"/actions/runs/{run['id']}/attempts/1/jobs?per_page=100",token)
+    require(status==200 and jobs['total_count']==len(jobs['jobs'])==len(workflow['jobs']) and
+            {j['name'] for j in jobs['jobs']}==set(workflow['jobs']) and
+            all((j['run_id'],j['head_sha'],j['status'],j['run_attempt'])==(run['id'],run['head_sha'],'completed',1) and
+                j['conclusion']==(run['conclusion'] if j['name']=='prod-only' else 'skipped') for j in jobs['jobs']),
+            'PROD_CONSUMER_ONLY')
+    role,=[s['env'].get('PROD_VERIFY_ONLY','false') for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
+    if role==PROD_ROLE:
+        require('prod-complete' in workflow['on']['workflow_dispatch']['inputs']['mode']['options'] and
+                "format('BGZONA prod {0}:complete', inputs.record_sha256)" in workflow['run-name'],'PROD_CONSUMER_ROLE')
+        role='false' if complete else 'true'
+    else:require(not complete and role in ('true','false'),'PROD_CONSUMER_ROLE')
+    if role=='true':
+        target=consumer_workflow(PROD_REPO,pin)
+        require(target['on']['workflow_dispatch']['inputs']['verify_only']['type']=='boolean' and
+                target['jobs']['verify']['permissions']=={} and '!inputs.verify_only' in target['jobs']['deploy']['if'] and
+                all(s.get('if')=='${{ !inputs.verify_only }}' for s in target['jobs']['build']['steps']
+                    if s.get('name')=='Upload exactly accepted Pages output'),'PROD_CONSUMER_READ_ONLY')
+    return dict(run=run['id'],record_sha256=record,prod_pin=pin,conclusion=run['conclusion'],read_only=role=='true')
+
+
+def public_prod_version(config):
+    # No token is sent to PROD, and no browser impersonation or redirects.
+    from urllib.request import Request,build_opener
+    from urllib.error import HTTPError,URLError
+    from e4f_github import NoRedirect
+    try:
+        with build_opener(NoRedirect).open(Request('https://bgzona.win/media-version.json?cid='+config['cid'],headers={
+                'Cache-Control':'no-cache','User-Agent':'BGZONA-Public-Verification/1.0 (+https://bgzona.win/)'}),timeout=15) as response:
+            require(response.status==200,'PROD_PUBLIC_HTTP');raw=response.read(32001)
+    except HTTPError as error:
+        print('PROD_PUBLIC_HTTP',error.code,flush=True);raise ProviderStop('PROD_PUBLIC_HTTP') from None
+    except (URLError,TimeoutError):raise ProviderStop('PROD_PUBLIC_NETWORK') from None
+    require(len(raw)<=32000 and parse(raw)==dict(cid=config['cid'],channel='prod',
+            registry_sha256=config['accepted']['registry_sha256']),'PROD_PUBLIC_CID')
+
+
+def completion_blob(repo,path,commit):
+    import base64
+    from hashlib import sha1
+    status,row=github('/repos/'+repo+'/contents/'+path+'?ref='+commit,
+                      standard.lab_read_token() if repo==CONTROL else None)
+    require(status==200 and (row['type'],row['path'],row['encoding'])==('file',path,'base64') and
+            0<row['size']<=2_000_000,'AUTO_COMPLETION_BLOB')
+    raw=base64.b64decode(''.join(row['content'].splitlines()),validate=True)
+    require(len(raw)==row['size'] and sha1(f"blob {len(raw)}\0".encode()+raw).hexdigest()==row['sha'],'AUTO_COMPLETION_BLOB')
+    return raw
+
+
+def completion_ancestor(repo,before,after):
+    require(gb.oid(before) and gb.oid(after),'AUTO_COMPLETION_PIN')
+    if before==after:return
+    status,row=github('/repos/'+repo+'/compare/'+before+'...'+after,
+                      standard.lab_read_token() if repo==CONTROL else None)
+    require(status==200 and row['status']=='ahead' and row['merge_base_commit']['sha']==before and
+            0<row['total_commits']<=256,'AUTO_COMPLETION_ANCESTRY')
+
+
+def consumer_source(env,token):
+    """An immutable approved consumer; subsequent article-only commits are data."""
+    pin=env['PROD_WORKFLOW_COMMIT'];require(gb.oid(pin),'PROD_WORKER_PIN')
+    root='/repos/'+PROD_REPO
+    status,ref=github(root+'/git/ref/heads/main',token)
+    require(status==200 and ref['ref']=='refs/heads/main' and gb.oid(ref['object']['sha']),'PROD_HEAD')
+    tip=ref['object']['sha']
+    if tip!=pin:
+        status,row=github(root+'/compare/'+pin+'...'+tip,token)
+        require(status==200 and row['status']=='ahead' and row['merge_base_commit']['sha']==pin and
+                0<row['total_commits']<=256,'PROD_SOURCE_ANCESTRY')
+        def tree(commit):
+            status,c=github(root+'/git/commits/'+commit,token)
+            require(status==200 and c['sha']==commit,'PROD_SOURCE_COMMIT')
+            status,t=github(root+'/git/trees/'+c['tree']['sha']+'?recursive=1',token)
+            require(status==200 and t['truncated'] is False,'PROD_SOURCE_TREE')
+            return {r['path']:(r['mode'],r['type'],r['sha']) for r in t['tree'] if r['type']!='tree'}
+        old,new=tree(pin),tree(tip)
+        changed={p for p in old.keys()|new.keys() if old.get(p)!=new.get(p)}
+        require(changed and all(p.startswith('content/') and
+                (p not in new or new[p][:2]==('100644','blob')) for p in changed),'PROD_EXECUTION_CODE_CHANGED')
+    return tip
+
+
+def completed_writer(writer,current,history):
+    """Prove a failed writer's actual consumer completion. GET-only, no exceptions by run ID.
+
+    This historical gate is additional to the unchanged full D3/E4M/PRIVATE and
+    live all-file verification at one_transition()/each actual guard/CAS boundary.
+    Historical refs may advance only by ancestry while this current writer runs.
+    """
+    from urllib.parse import quote
+    from zipfile import ZipFile
+    from io import BytesIO
+    def get(repo,path):
+        status,row=github('/repos/'+repo+path,standard.lab_read_token() if repo==CONTROL else None)
+        require(status==200,'AUTO_COMPLETION_API');return row
+    def identity(row,repo_id,wf,branch,actor):
+        require((row['repository']['id'],row['workflow_id'],row['run_attempt'],row['event'],row['head_branch'],row['actor']['id'],
+                 row.get('triggering_actor',row['actor'])['id'],row['status'])==
+                (repo_id,wf,1,'workflow_dispatch',branch,actor,actor,'completed') and gb.oid(row['head_sha']),
+                'AUTO_COMPLETION_IDENTITY')
+    prior=get(CONTROL,f"/actions/runs/{writer['id']}/attempts/1")
+    identity(prior,CONTROL_ID,CONTROL_WORKFLOW,'automation-control',DISPATCH_ACTOR)
+    fields=('id','workflow_id','run_number','run_attempt','head_sha','status','conclusion','display_title')
+    require(all(prior[k]==writer[k] for k in fields) and prior['path'].split('@',1)[0]=='.github/workflows/shared-media.yml' and
+            prior['conclusion']=='failure','AUTO_PREVIOUS_UNRESOLVED')
+    def link(title):
+        prefix=next((p for p in WRITER_PREFIXES if title.startswith(p)),None)
+        require(prefix is not None,'AUTO_COMPLETION_WRITER_LINK')
+        parts=title[len(prefix):].split(':');require(len(parts)==2,'AUTO_COMPLETION_WRITER_LINK')
+        return tuple(push_relay.number(v) for v in parts)
+    source,relay=link(prior['display_title']);new_source,new_relay=link(current['display_title'])
+    require(source!=new_source and relay!=new_relay,'AUTO_COMPLETION_OLD_REQUEST')
+    require(sum(r['display_title']==prior['display_title'] for r in history['workflow_runs'])==1,'AUTO_COMPLETION_DUPLICATE_WRITER')
+    workflow=consumer_workflow(CONTROL,prior['head_sha'],standard.lab_read_token())
+    jobs=get(CONTROL,f"/actions/runs/{prior['id']}/attempts/1/jobs?per_page=100")
+    import re
+    expected={name:('success' if name in ('auto-intake','auto-assets','auto-dev') else
+                   'failure' if name=='auto-prod' else 'skipped') for name in workflow['jobs'] if name!='auto-continue'}
+    continuations=[j for j in jobs['jobs'] if j['name']=='auto-continue' or
+                   re.fullmatch(r'auto-continue \((0|[1-9][0-9]*)\)',j['name'])]
+    others=[j for j in jobs['jobs'] if j not in continuations]
+    require(jobs['total_count']==len(jobs['jobs']) and len(others)==len(expected) and
+            {j['name']:j['conclusion'] for j in others}==expected and
+            all((j['run_id'],j['head_sha'],j['status'],j['run_attempt'])==(prior['id'],prior['head_sha'],'completed',1)
+                for j in jobs['jobs']),'AUTO_COMPLETION_WRITER_JOBS')
+    if not (len(continuations)==1 and continuations[0]['name']=='auto-continue' and
+            continuations[0]['conclusion']=='skipped'):
+        strategy=workflow['jobs']['auto-continue']['strategy']
+        slots=[int(j['name'][15:-1]) for j in continuations if j['name'].startswith('auto-continue (')]
+        require(strategy['max-parallel']==1 and strategy['fail-fast'] is True and
+                strategy['matrix']==dict(slot="${{ fromJSON(needs.auto-intake.outputs.slots || '[]') }}") and
+                0<len(continuations)<=128 and len(slots)==len(continuations) and
+                sorted(slots)==list(range(len(slots))) and
+                all(j['conclusion']=='success' for j in continuations),'AUTO_COMPLETION_CONTINUATIONS')
+    after=[r for r in history['workflow_runs'] if prior['run_number']<r['run_number']<current['run_number']]
+    require(after and all(r['display_title'].startswith('BGZONA prod ') for r in after),'AUTO_PREVIOUS_UNRESOLVED')
+    consumers=[(r,prod_consumer(r)) for r in after]
+    completed=[(r,p) for r,p in consumers if p['conclusion']=='success' and not p['read_only']]
+    require(len(completed)==1 and all(p['read_only'] or (r,p) in completed for r,p in consumers),'AUTO_PREVIOUS_UNRESOLVED')
+    recovered,consumer=completed[0]
+    require(prior['updated_at']<=recovered['created_at'] and recovered['updated_at']<=current['created_at'],
+            'AUTO_COMPLETION_ORDER')
+    completion_ancestor(CONTROL,prior['head_sha'],recovered['head_sha'])
+    completion_ancestor(CONTROL,recovered['head_sha'],current['head_sha'])
+    item=standard.proposal(consumer['record_sha256'],normal=True);record=item['record']
+    require(item['source_run']==source and record['phase']=='staged' and item.get('execution',{}).get('remaining')==0,
+            'AUTO_COMPLETION_RECORD')
+    head=get(CONTROL,'/git/ref/'+LEDGER.removeprefix('refs/'))
+    require(head['ref']==LEDGER and head['object']['type']=='commit','AUTO_COMPLETION_LEDGER_REF')
+    head=head['object']['sha'];path=f"records/{record['index']:08d}.json"
+    changes=get(CONTROL,'/commits?sha='+head+'&path='+quote(path,safe='')+'&per_page=100')
+    require(type(changes) is list and len(changes)==1,'AUTO_COMPLETION_LEDGER_HISTORY')
+    ledger=changes[0]['sha'];commit=get(CONTROL,'/git/commits/'+ledger)
+    require(commit['sha']==ledger and [p['sha'] for p in commit['parents']]==[item['ledger_parent']] and
+            parse(completion_blob(CONTROL,'anchor.json',ledger))==record and
+            completion_blob(CONTROL,path,ledger)==data(record),'AUTO_COMPLETION_LEDGER')
+    completion_ancestor(CONTROL,ledger,head)
+    # These are historical accepted refs, not new writer authority.
+    for ref,expected_sha in ((MAIN,record['primary_main']),('refs/bgzona/witness',record['primary_witness'])):
+        row=get(ASSETS,'/git/ref/'+ref.removeprefix('refs/'))
+        require(row['ref']==ref and row['object']['type']=='commit','AUTO_COMPLETION_ASSETS_REF')
+        completion_ancestor(ASSETS,expected_sha,row['object']['sha'])
+    from request_executor import PREFIX
+    authority=get(ASSETS,'/git/commits/'+record['primary_main'])
+    message=authority['message'].strip()
+    require(authority['sha']==record['primary_main'] and message.startswith(PREFIX),'AUTO_COMPLETION_BINDING')
+    bound=parse(message[len(PREFIX):].encode('utf8'))
+    require(bound['final'] is True and bound['phase']=='staged' and type(bound['step']) is int and
+            0<bound['step']==bound['steps'] and bound['request']==item['execution']['request'] and
+            bound['plan']==item['execution']['plan'],'AUTO_COMPLETION_BINDING')
+    registry=completion_blob(ASSETS,'automation-state/registry.json',record['primary_main'])
+    witness=parse(completion_blob(ASSETS,'witness.json',record['primary_witness']))
+    require(digest(registry)==record['registry_sha256']==witness['registry_sha256'] and
+            witness['authority']==record['primary_main'],'AUTO_COMPLETION_ASSETS')
+    release=standard.public_release('r18h-dev-'+consumer['record_sha256'])
+    name='r18h-dev-'+consumer['record_sha256']+'.zip'
+    asset,=[a for a in release['assets'] if a['name']==name]
+    raw=standard.public_asset(release,name,asset['size'],64_000_000)
+    require(asset.get('digest')=='sha256:'+digest(raw),'AUTO_COMPLETION_PROJECTION')
+    with ZipFile(BytesIO(raw)) as archive:
+        require(len(archive.infolist())<=10000 and sum(i.file_size for i in archive.infolist())<=256_000_000 and
+                all(0<archive.getinfo(n).file_size<=16_000_000 for n in ('artifact/catalog.json','expected-files.json')),
+                'AUTO_COMPLETION_PROJECTION_LIMIT')
+        catalog=archive.read('artifact/catalog.json');expected_files=archive.read('expected-files.json');count=len(archive.infolist())
+    counts={k:sum(r['state']=='published' and (k=='published' or r['collection']==k or k=='slides' and r['collection']=='kolaji' and r['slideshow'])
+                  for r in parse(catalog)['items']) for k in ('published','kolaji','poslaniya','slides')}
+    accepted=dict(channel='prod',ledger_commit=ledger,record_sha256=consumer['record_sha256'],
+        authority_commit=record['primary_main'],witness_commit=record['primary_witness'],assets_tip=record['primary_main'],
+        registry_sha256=record['registry_sha256'],input=dict(schema=1,repository=PROD_REPO,archive_name=name,archive_sha256=digest(raw),
+            bytes=len(raw),members=count,source_catalog_sha256=digest(catalog),expected_files_sha256=digest(expected_files),
+            snapshot=counts,provider=dict(release_id=release['id'],asset_id=asset['id'],tag=release['tag_name'])))
+    cid=digest(data(accepted));consumer_workflow(PROD_REPO,consumer['prod_pin'])
+    # Bind DEV and PROD to their respective immutable workflow pins and exact CID.
+    dev_accepted=parse(data(accepted));dev_accepted['channel']='dev';dev_accepted['input']['repository']='malin-bg/bgzona-win-dev'
+    dev_cid=digest(data(dev_accepted))
+    pins={name:[s['env'][key] for s in workflow['jobs'][name]['steps'] if key in s.get('env',{})]
+          for name,key in (('auto-dev','C3_DEV_MAIN'),('auto-prod','PROD_WORKFLOW_COMMIT'))}
+    require(all(len(p)==1 and gb.oid(p[0]) for p in pins.values()),'AUTO_COMPLETION_WORKFLOW_PIN')
+    for repo,wf,repo_id,pin,title,actor,low,high in (
+        ('malin-bg/bgzona-win-dev',232539432,1149689018,pins['auto-dev'][0],'DEV '+dev_cid,353092585,prior['created_at'],prior['updated_at']),
+        (PROD_REPO,PROD_WORKFLOW_ID,PROD_REPOSITORY_ID,consumer['prod_pin'],'PROD '+cid,353092585,recovered['created_at'],recovered['updated_at'])):
+        listing=workflow_history(repo,wf)['workflow_runs']
+        require(all(r['status']=='completed' for r in listing),'AUTO_COMPLETION_CONCURRENT')
+        hits=[r for r in listing if r['display_title']==title and low<=r['created_at'] and r['updated_at']<=high]
+        require(len(hits)==1,'AUTO_COMPLETION_CHILD')
+        child=hits[0];identity(child,repo_id,wf,'main',actor)
+        require(child['head_sha']==pin and child['conclusion']=='success' and child['path'].split('@',1)[0]=='.github/workflows/hugo.yml',
+                'AUTO_COMPLETION_CHILD_IDENTITY')
+        child_jobs=get(repo,f"/actions/runs/{child['id']}/attempts/1/jobs?per_page=100")
+        required=dict(build='success',deploy='success',verify='success') if repo==PROD_REPO else dict(build='success',deploy='success')
+        require(child_jobs['total_count']==len(child_jobs['jobs'])==len(required) and
+                {j['name']:j['conclusion'] for j in child_jobs['jobs']}==required and
+                all((j['run_id'],j['head_sha'],j['run_attempt'],j['status'])==(child['id'],pin,1,'completed') for j in child_jobs['jobs']),
+                'AUTO_COMPLETION_CHILD_JOBS')
+        if repo==PROD_REPO:
+            steps={j['name']:{s['name']:s['conclusion'] for s in j.get('steps',[])} for j in child_jobs['jobs']}
+            require(steps['build'].get('Verify bound build source')=='success' and
+                    steps['build'].get('Trusted PROD input, current-source build, acceptance and seal')=='success' and
+                    steps['build'].get('Upload exactly accepted Pages output')=='success' and
+                    steps['deploy'].get('Deploy this run accepted Pages artifact')=='success' and
+                    steps['verify'].get('Verify public PROD CID and files against the seal')=='success',
+                    'AUTO_COMPLETION_NOT_DEPLOYED')
+            require(all(r['id']==child['id'] or r['created_at']<child['created_at'] for r in listing),
+                    'AUTO_COMPLETION_LATER_PROD')
+    require(consumer_source(dict(PROD_WORKFLOW_COMMIT=consumer['prod_pin']),None)==
+            get(PROD_REPO,'/git/ref/heads/main')['object']['sha'],'AUTO_COMPLETION_PROD_SOURCE')
+    public_prod_version(dict(cid=cid,accepted=accepted))
+    require(get(CONTROL,'/git/ref/'+LEDGER.removeprefix('refs/'))['object']['sha']==head,
+            'AUTO_COMPLETION_STATE_MOVED')
+    print('AUTO_PREVIOUS_COMPLETED',prior['id'],recovered['id'],consumer['record_sha256'],cid,flush=True)
+
+
 def control_run(run, source=None, relay=None, *, private_api=None, private_main=None):
     row = public(f"/actions/runs/{run}/attempts/1")
     ref = public("/git/ref/heads/automation-control")
+    require(ref["ref"]==CONTROL_REF and ref["object"]["type"]=="commit","AUTO_CONTROL_REF")
     require((row["id"], row["workflow_id"], row["run_attempt"], row["event"],
              row["repository"]["id"], row["actor"]["id"], row["head_branch"],
              row["path"].split("@",1)[0], row["head_sha"], row["status"]) ==
             (run, CONTROL_WORKFLOW, 1, "workflow_dispatch", CONTROL_ID, DISPATCH_ACTOR,
              "automation-control", ".github/workflows/shared-media.yml",
              ref["object"]["sha"], "in_progress"), "AUTO_CONTROL_IDENTITY")
+    require(row.get("triggering_actor",row["actor"])["id"]==DISPATCH_ACTOR,"AUTO_CONTROL_ACTOR")
     title = row["display_title"]
     m1 = row["run_number"]==M1_NUMBER and title==f"BGZONA auto {M1_SOURCE}:{M1_RELAY}"
     if m1:
@@ -424,7 +720,11 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
         require(len(intake) == 1 and intake[0]["run_id"] == run and
                 intake[0]["head_sha"] == row["head_sha"] and intake[0]["status"] == "completed" and
                 intake[0]["conclusion"] == "success", "AUTO_INTAKE_REQUIRED")
-    history = public(f"/actions/workflows/{CONTROL_WORKFLOW}/runs?event=workflow_dispatch&branch=automation-control&per_page=100")
+    history = workflow_history(CONTROL,CONTROL_WORKFLOW,lab=True)
+    require(max(history["workflow_runs"],key=lambda r:r["run_number"])["id"]==run,"AUTO_HISTORY_CURRENT")
+    require(history['total_count']==row['run_number'] and
+            {r['run_number'] for r in history['workflow_runs']}==set(range(1,row['run_number']+1)),
+            'AUTO_HISTORY_GAP')
     hits = [r for r in history["workflow_runs"] if r["display_title"] == title]
     require((len(hits)==1 or m1 and len(hits)==5 and {r["id"] for r in hits}=={run,M1_FAILED,M1_SCOPE_FAILED,M1_ACCEPTED_FAILED,M1_PROGRESS_FAILED}) and
             max(hits,key=lambda r:r["run_number"])["id"]==run and all(r["run_attempt"]==1 for r in hits),
@@ -455,8 +755,8 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
     require(previous or history["total_count"] == len(history["workflow_runs"]),
             "AUTO_HISTORY_WINDOW")
     if previous:
-        require(max(previous, key=lambda r: r["run_number"])["conclusion"] == "success",
-                "AUTO_PREVIOUS_UNRESOLVED")
+        writer=max(previous,key=lambda r:r["run_number"])
+        if writer['conclusion']!='success':completed_writer(writer,row,history)
     # A failed repeatable read does not imply an unfinished writer. Mixed consumers
     # remain unresolved until a later positive read-only proof; live proof is also
     # required at the authenticated final D3 boundary before new registration/CAS.
@@ -464,15 +764,15 @@ def control_run(run, source=None, relay=None, *, private_api=None, private_main=
                r.get("display_title", "").startswith("BGZONA prod ")]
     consumer_history(consumers)
     protection=public("/rulesets/26657290")
-    require(protection["enforcement"]=="active" and
+    require(protection["enforcement"]=="active" and len(protection["rules"])==3 and
             {r["type"] for r in protection["rules"]}=={"update","deletion","non_fast_forward"} and
             protection["conditions"]["ref_name"]["include"]==[CONTROL_REF] and
             protection["conditions"]["ref_name"]["exclude"]==[],"AUTO_CONTROL_PROTECTION")
+    require(public("/git/ref/heads/automation-control")==ref,"AUTO_CONTROL_REF_MOVED")
     return row
 
 
 def consumer_history(rows):
-    from control_entry import prod_consumer
     for row in sorted(rows,key=lambda r:r['run_number'],reverse=True):
         result=prod_consumer(row)
         if result['conclusion']=='success':return

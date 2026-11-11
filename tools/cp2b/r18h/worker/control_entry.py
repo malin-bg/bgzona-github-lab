@@ -748,62 +748,13 @@ def prod_input(env,item, *, all_public=False):
 
 
 def prod_workflow(repo,commit,token=None):
-    """Read only immutable workflow bytes from the two existing public repositories."""
-    from hashlib import sha1
-    require(repo in (CONTROL,PROD) and gb.oid(commit),'PROD_CODE_PIN')
-    path='.github/workflows/shared-media.yml' if repo==CONTROL else '.github/workflows/hugo.yml'
-    status,row=github('/repos/'+repo+'/contents/'+path+'?ref='+commit,token)
-    require(status==200 and (row['type'],row['path'],row['encoding'])==('file',path,'base64') and
-            0<row['size']<=128000,'PROD_CODE_BLOB')
-    raw=base64.b64decode(''.join(row['content'].splitlines()),validate=True)
-    require(len(raw)==row['size'] and sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest()==row['sha'],'PROD_CODE_BLOB')
-    return parse(raw)
+    from auto_intake import consumer_workflow as shared
+    return shared(repo,commit,token)
 
 
 def prod_consumer(row):
-    """Classify an actual completed consumer, never a skipped/unknown writer."""
-    from standard_entry import lab_read_token
-    token=lab_read_token();root='/repos/'+CONTROL
-    status,run=github(root+f"/actions/runs/{row['id']}/attempts/1",token)
-    require(status==200 and (run['id'],run['workflow_id'],run['run_attempt'],run['event'],
-            run['repository']['id'],run['actor']['id'],run['head_branch'],run['path'].split('@',1)[0],
-            run['head_sha'],run['status'],run['conclusion'])==
-            (row['id'],408732936,1,'workflow_dispatch',CONTROL_ID,gb.CP2B_OWNER_ID,
-             'automation-control','.github/workflows/shared-media.yml',row['head_sha'],'completed',row['conclusion']) and
-            run['conclusion'] in ('success','failure') and run['display_title']==row['display_title'] and
-            run['display_title'].startswith('BGZONA prod '),'PROD_CONSUMER_IDENTITY')
-    label=run['display_title'][12:];complete=label.endswith(':complete')
-    record=label.removesuffix(':complete')
-    require(gb.sha(record) and (not complete or record==PROD_R4['record']),'PROD_CONSUMER_IDENTITY')
-    workflow=prod_workflow(CONTROL,run['head_sha'],token);job=workflow['jobs']['prod-only']
-    require(job['permissions']==dict(contents='read',actions='read') and job['environment']=='r18h-control','PROD_CONSUMER_PERMISSIONS')
-    app,=[s['with'] for s in job['steps'] if s.get('id')=='prod-app']
-    require(app['repositories']=='bgzona-win' and app['permission-actions']=='write' and
-            not any(k.startswith('permission-') and k!='permission-actions' for k in app),'PROD_CONSUMER_PERMISSIONS')
-    pin,=[s['env']['PROD_WORKFLOW_COMMIT'] for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
-    require(gb.oid(pin),'PROD_CONSUMER_PIN')
-    status,jobs=github(root+f"/actions/runs/{run['id']}/attempts/1/jobs?per_page=100",token)
-    require(status==200 and jobs['total_count']==len(jobs['jobs']) and
-            {j['name'] for j in jobs['jobs']}==set(workflow['jobs']) and
-            all(j['run_id']==run['id'] and j['head_sha']==run['head_sha'] and j['status']=='completed' and
-                j['conclusion']==(run['conclusion'] if j['name']=='prod-only' else 'skipped') for j in jobs['jobs']),
-            'PROD_CONSUMER_ONLY')
-    role,=[s['env'].get('PROD_VERIFY_ONLY','false') for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
-    if role==PROD_COMPLETION_ROLE:
-        require('prod-complete' in workflow['on']['workflow_dispatch']['inputs']['mode']['options'] and
-                "format('BGZONA prod {0}:complete', inputs.record_sha256)" in workflow['run-name'],
-                'PROD_CONSUMER_ROLE')
-        role='false' if complete else 'true'
-    else:require(not complete and role in ('true','false'),'PROD_CONSUMER_ROLE')
-    if role=='true':
-        target=prod_workflow(PROD,pin,token)
-        require(target['on']['workflow_dispatch']['inputs']['verify_only']['type']=='boolean' and
-                target['jobs']['verify']['permissions']=={} and
-                '!inputs.verify_only' in target['jobs']['deploy']['if'] and
-                all(s.get('if')=='${{ !inputs.verify_only }}' for s in target['jobs']['build']['steps']
-                    if s.get('name')=='Upload exactly accepted Pages output'),'PROD_CONSUMER_READ_ONLY')
-    return dict(run=run['id'],record_sha256=record,prod_pin=pin,
-                conclusion=run['conclusion'],read_only=role=='true')
+    from auto_intake import prod_consumer as shared
+    return shared(row)
 
 
 def prod_existing_readback(env,run,config,tip,origin):
@@ -909,27 +860,8 @@ def prod_existing_readback(env,run,config,tip,origin):
     return run['id']
 
 def prod_source(env,token):
-    """An immutable approved consumer; subsequent article-only commits are data."""
-    pin=env['PROD_WORKFLOW_COMMIT'];require(gb.oid(pin),'PROD_WORKER_PIN')
-    root='/repos/'+PROD
-    status,ref=github(root+'/git/ref/heads/main',token)
-    require(status==200 and ref['ref']=='refs/heads/main' and gb.oid(ref['object']['sha']),'PROD_HEAD')
-    tip=ref['object']['sha']
-    if tip!=pin:
-        status,row=github(root+'/compare/'+pin+'...'+tip,token)
-        require(status==200 and row['status']=='ahead' and row['merge_base_commit']['sha']==pin and
-                0<row['total_commits']<=256,'PROD_SOURCE_ANCESTRY')
-        def tree(commit):
-            status,c=github(root+'/git/commits/'+commit,token)
-            require(status==200 and c['sha']==commit,'PROD_SOURCE_COMMIT')
-            status,t=github(root+'/git/trees/'+c['tree']['sha']+'?recursive=1',token)
-            require(status==200 and t['truncated'] is False,'PROD_SOURCE_TREE')
-            return {r['path']:(r['mode'],r['type'],r['sha']) for r in t['tree'] if r['type']!='tree'}
-        old,new=tree(pin),tree(tip)
-        changed={p for p in old.keys()|new.keys() if old.get(p)!=new.get(p)}
-        require(changed and all(p.startswith('content/') and
-                (p not in new or new[p][:2]==('100644','blob')) for p in changed),'PROD_EXECUTION_CODE_CHANGED')
-    return tip
+    from auto_intake import consumer_source as shared
+    return shared(env,token)
 
 
 def dispatch_prod(env,trust, *, verify_only=False, complete=False):
@@ -1213,19 +1145,8 @@ def prod_idle(token):
         require(count==0,'PROD_CONCURRENT')
 
 def prod_live_version(config):
-    from urllib.request import Request,build_opener
-    from urllib.error import HTTPError,URLError
-    from e4f_github import NoRedirect
-    url='https://bgzona.win/media-version.json?cid='+config['cid']
-    try:
-        with build_opener(NoRedirect).open(Request(url,headers={'Cache-Control':'no-cache',
-              'User-Agent':'BGZONA-Public-Verification/1.0 (+https://bgzona.win/)'}),timeout=15) as response:
-            require(response.status==200,'PROD_PUBLIC_HTTP');raw=response.read(32001)
-    except HTTPError as error:
-        print('PROD_PUBLIC_HTTP',error.code,flush=True);raise ProviderStop('PROD_PUBLIC_HTTP') from None
-    except (URLError,TimeoutError):raise ProviderStop('PROD_PUBLIC_NETWORK') from None
-    require(len(raw)<=32000 and parse(raw)==dict(cid=config['cid'],channel='prod',
-            registry_sha256=config['accepted']['registry_sha256']),'PROD_PUBLIC_CID')
+    from auto_intake import public_prod_version as shared
+    return shared(config)
 
 def prod_published_source(env,config):
     """The most recent actual Pages step, including pushes and failed post-checks."""
