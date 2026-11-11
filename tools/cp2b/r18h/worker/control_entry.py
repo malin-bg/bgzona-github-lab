@@ -38,6 +38,22 @@ RESUME_HANDOFF='21407c9ecbd52690001bb7fc519ad9fe536bff7b'
 RESUME_SOURCE_ARTIFACT=(13490857727,'a658d82a2c04489032691fab7495636275b2a38e6af8a6ab42894ef52840ea2a')
 RESUME_PRIVATE_ARTIFACT=(13493237223,'3278798b68a0284c43116c80ddc0c760e9a8853c6d850828683d9a6721f33b78')
 
+# One owner-approved consumer completion of the independently staged R4 result.
+PROD_R4=dict(writer=42904773089,writer_sha='045e25e873248f078bf084fa565dafe06d89b396',
+    previous_run=42907618181,previous_sha='cf903a04b0730721e13d4c8dc6d22af918d97531',
+    ledger='90430d4be6280869992dcff046a66ad079b44ebf',record='2ac6ee4df8e427e380bcbeb840ab28a552dbbdab5e05d11fb765727f0b021a0b',
+    assets='ac94046822d9fba54f41141c8da1e304ea2c83a2',witness='f883b5e50661eae0dc251037ec49bd64e4ecc7b1',
+    registry='2e4cb59d276fe1dda1a0b46a27606a28d0e78a20badecb18669cdd5a22317493',
+    dev_cid='6cfd3430adf5612a3a3b4896516e29844a5a49ecc6af320b7a1b809324bcb64f',
+    cid='738478204838ae1a4ceae2176ff35c1995e257dfea49844fb3cb64dc0a70d2bd',
+    old_cid='350b2d579fb56b5ca8394f40cefca5873700ebe1b1573aebdc9689a57df517c3',
+    old_registry='89947b1091b14cd7f19c13671d3204edd0b9630635f1148a740d516b580909b9',
+    old_pages=42838778343,old_pages_sha='caec5cf004778ebaef0855d401a58e4683ba65ee',
+    deployment=7685475408,release=440945104,asset=733050580,
+    archive='c406e4352cfe8b8f993540adc9da9166c082a936b698bacba0a27ed683146045',
+    workflow='21d9e7c94ee9c194b7fc4a746af94c57fac3408e3e324bfdcfb31a4f33b82bf5')
+PROD_COMPLETION_ROLE="${{ inputs.mode == 'prod' && 'true' || 'false' }}"
+
 
 def context(env):
     require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_REPOSITORY']==CONTROL and
@@ -755,7 +771,10 @@ def prod_consumer(row):
             (row['id'],408732936,1,'workflow_dispatch',CONTROL_ID,gb.CP2B_OWNER_ID,
              'automation-control','.github/workflows/shared-media.yml',row['head_sha'],'completed',row['conclusion']) and
             run['conclusion'] in ('success','failure') and run['display_title']==row['display_title'] and
-            run['display_title'].startswith('BGZONA prod ') and gb.sha(run['display_title'][12:]),'PROD_CONSUMER_IDENTITY')
+            run['display_title'].startswith('BGZONA prod '),'PROD_CONSUMER_IDENTITY')
+    label=run['display_title'][12:];complete=label.endswith(':complete')
+    record=label.removesuffix(':complete')
+    require(gb.sha(record) and (not complete or record==PROD_R4['record']),'PROD_CONSUMER_IDENTITY')
     workflow=prod_workflow(CONTROL,run['head_sha'],token);job=workflow['jobs']['prod-only']
     require(job['permissions']==dict(contents='read',actions='read') and job['environment']=='r18h-control','PROD_CONSUMER_PERMISSIONS')
     app,=[s['with'] for s in job['steps'] if s.get('id')=='prod-app']
@@ -770,7 +789,12 @@ def prod_consumer(row):
                 j['conclusion']==(run['conclusion'] if j['name']=='prod-only' else 'skipped') for j in jobs['jobs']),
             'PROD_CONSUMER_ONLY')
     role,=[s['env'].get('PROD_VERIFY_ONLY','false') for s in job['steps'] if 'PROD_WORKFLOW_COMMIT' in s.get('env',{})]
-    require(role in ('true','false'),'PROD_CONSUMER_ROLE')
+    if role==PROD_COMPLETION_ROLE:
+        require('prod-complete' in workflow['on']['workflow_dispatch']['inputs']['mode']['options'] and
+                "format('BGZONA prod {0}:complete', inputs.record_sha256)" in workflow['run-name'],
+                'PROD_CONSUMER_ROLE')
+        role='false' if complete else 'true'
+    else:require(not complete and role in ('true','false'),'PROD_CONSUMER_ROLE')
     if role=='true':
         target=prod_workflow(PROD,pin,token)
         require(target['on']['workflow_dispatch']['inputs']['verify_only']['type']=='boolean' and
@@ -778,7 +802,7 @@ def prod_consumer(row):
                 '!inputs.verify_only' in target['jobs']['deploy']['if'] and
                 all(s.get('if')=='${{ !inputs.verify_only }}' for s in target['jobs']['build']['steps']
                     if s.get('name')=='Upload exactly accepted Pages output'),'PROD_CONSUMER_READ_ONLY')
-    return dict(run=run['id'],record_sha256=run['display_title'][12:],prod_pin=pin,
+    return dict(run=run['id'],record_sha256=record,prod_pin=pin,
                 conclusion=run['conclusion'],read_only=role=='true')
 
 
@@ -908,7 +932,7 @@ def prod_source(env,token):
     return tip
 
 
-def dispatch_prod(env,trust, *, verify_only=False):
+def dispatch_prod(env,trust, *, verify_only=False, complete=False):
     """Explicit verify/publish roles. Unknown dispatch is never resent."""
     import time
     from urllib.parse import quote
@@ -918,6 +942,8 @@ def dispatch_prod(env,trust, *, verify_only=False):
     require(not verify_only or env.get('GITHUB_JOB')=='prod-only' and env.get('PROD_VERIFY_ONLY')=='true','PROD_VERIFY_ROLE')
     tip=prod_source(env,token);status,wf=github(root+'/actions/workflows/'+str(PROD_WORKFLOW),token)
     require(status==200 and (wf['id'],wf['path'],wf['state'])==(PROD_WORKFLOW,'.github/workflows/hugo.yml','active'),'PROD_WORKFLOW')
+    require(not complete or not verify_only,'PROD_COMPLETION_ROLE')
+    recovered=prod_completion(env,config,tip) if complete else None
     published=prod_published_source(env,config) if verify_only else None
     title='VERIFY PROD '+cid+':'+str(published['run']) if verify_only else 'PROD '+cid
     run=None
@@ -932,12 +958,22 @@ def dispatch_prod(env,trust, *, verify_only=False):
         require(len(hits)<=1,'PROD_DUPLICATE')
         if hits:
             prior,=hits
-            require((prior['run_attempt'],prior['head_sha'],prior['status'],prior['conclusion'])==(1,tip,'completed','success'),
-                    'PROD_PRIOR_UNRESOLVED');run=prior['id']
+            if complete:
+                require(all(prior[k]==recovered[k] for k in
+                            ('id','workflow_id','run_number','run_attempt','head_sha','status','conclusion','display_title')),
+                        'PROD_COMPLETION_PRIOR_MOVED')
+            else:
+                require((prior['run_attempt'],prior['head_sha'],prior['status'],prior['conclusion'])==(1,tip,'completed','success'),
+                        'PROD_PRIOR_UNRESOLVED');run=prior['id']
     if run is None:
         prod_idle(token)
         params=dict(accepted_cid=cid,input_trust=trust.decode(),verify_only='true' if verify_only else 'false',
                     published_source=published['source'] if verify_only else '',published_run=str(published['run']) if verify_only else '')
+        if complete:
+            marker=Path(env['RUNNER_TEMP'])/('prod-complete-'+cid+'.sent')
+            try:
+                with marker.open('xb') as handle:handle.write(data(dict(control_run=int(env['GITHUB_RUN_ID']),cid=cid)))
+            except FileExistsError:raise ProviderStop('PROD_COMPLETION_ALREADY_SENT') from None
         status,reply=github(root+'/actions/workflows/'+str(PROD_WORKFLOW)+'/dispatches',token,
                            dict(ref='main',inputs=params,return_run_details=True))
         require(status==200 and isinstance(reply,dict) and gb.positive(reply.get('workflow_run_id')),'PROD_DISPATCH_UNKNOWN')
@@ -957,35 +993,174 @@ def dispatch_prod(env,trust, *, verify_only=False):
     require(prod_source(env,token)==tip,'PROD_SOURCE_MOVED')
     if verify_only:require(prod_published_source(env,config)==published,'PROD_PUBLISHED_SOURCE_MOVED')
     return run
+def prod_completion_claim(current,history):
+    require(type(history) is dict and type(history.get('total_count')) is int and
+            history['total_count']==len(history['workflow_runs']) and
+            len({r['id'] for r in history['workflow_runs']})==history['total_count'],'PROD_COMPLETION_HISTORY')
+    rows=history['workflow_runs'];title='BGZONA prod '+PROD_R4['record']+':complete'
+    claim=[r for r in rows if r['display_title']==title]
+    require(current['run_number']>29 and len(claim)==1 and claim[0]['id']==current['id'] and
+            all(claim[0][k]==current[k] for k in ('workflow_id','head_sha','run_number','run_attempt')) and
+            claim[0]['run_attempt']==1 and all(r['id']==current['id'] or r['status']=='completed' and r['run_number']<=29 for r in rows),
+            'PROD_COMPLETION_REPLAY_OR_CONCURRENT')
+
+
+
+def prod_event_object(pairs):
+    obj=dict(pairs)
+    require(len(obj)==len(pairs),'PROD_CONTROL_DUPLICATE_INPUT')
+    return obj
+
+
+def prod_completion(env,config,tip):
+    """Positive proof for exactly R4; this grants no D3/Assets authority."""
+    require(env['GITHUB_JOB']=='prod-only' and env.get('PROD_VERIFY_ONLY')=='false' and
+            env['GITHUB_EVENT_NAME']=='workflow_dispatch' and env['GITHUB_ACTOR_ID']==str(gb.CP2B_OWNER_ID) and
+            env['GITHUB_REPOSITORY']==CONTROL and env['GITHUB_REPOSITORY_ID']==str(CONTROL_ID) and
+            env['GITHUB_REF']==CONTROL_REF and env['GITHUB_REF_PROTECTED']=='true' and
+            env['GITHUB_RUN_ATTEMPT']=='1' and env['GITHUB_ACTIONS']=='true' and
+            env['GITHUB_WORKFLOW_REF']==CONTROL+'/.github/workflows/shared-media.yml@'+CONTROL_REF,
+            'PROD_COMPLETION_SCOPE')
+    params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes(),object_pairs_hook=prod_event_object)['inputs']
+    require(type(params) is dict and params.get('mode')=='prod-complete' and
+            params.get('record_sha256')==PROD_R4['record'] and
+            set(params)<={'mode','record_sha256','source_run','private_run','relay_run'} and
+            all(params.get(k,'')=='' for k in ('source_run','private_run','relay_run')),'PROD_COMPLETION_INPUT')
+    current=control_run(int(env['GITHUB_RUN_ID']))
+    title='BGZONA prod '+PROD_R4['record']+':complete'
+    require((current['workflow_id'],current['head_sha'],current['status'],current['display_title'])==
+            (408732936,env['GITHUB_WORKFLOW_SHA'],'in_progress',title),'PROD_COMPLETION_IDENTITY')
+    status,history=github('/repos/'+CONTROL+'/actions/workflows/408732936/runs?per_page=100')
+    require(status==200 and type(history) is dict and
+            type(history.get('total_count')) is int and history['total_count']==len(history['workflow_runs']) and
+            len({r['id'] for r in history['workflow_runs']})==history['total_count'],'PROD_COMPLETION_HISTORY')
+    prod_completion_claim(current,history)
+    rows=history['workflow_runs']
+    writers=[r for r in rows if r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume '))]
+    require(writers and max(writers,key=lambda r:r['run_number'])['id']==PROD_R4['writer'],'PROD_COMPLETION_WRITER')
+    status,writer=github('/repos/'+CONTROL+f"/actions/runs/{PROD_R4['writer']}/attempts/1")
+    require(status==200 and (writer['id'],writer['workflow_id'],writer['run_number'],writer['run_attempt'],
+            writer['repository']['id'],writer['actor']['id'],writer['event'],writer['head_branch'],
+            writer['path'].split('@',1)[0],writer['head_sha'],writer['status'],writer['conclusion'],writer['display_title'])==
+            (PROD_R4['writer'],408732936,29,1,CONTROL_ID,gb.CP2B_OWNER_ID,'workflow_dispatch','automation-control',
+             '.github/workflows/shared-media.yml',PROD_R4['writer_sha'],'completed','failure',
+             'BGZONA auto-resume 42852332535:42852410172'),'PROD_COMPLETION_WRITER_IDENTITY')
+    prior_writer,=[r for r in rows if r['id']==writer['id']]
+    identity_fields=('workflow_id','run_number','run_attempt','head_sha','status','conclusion','display_title')
+    require(all(prior_writer[k]==writer[k] for k in identity_fields),'PROD_COMPLETION_WRITER_HISTORY')
+    workflow=prod_workflow(CONTROL,PROD_R4['writer_sha'])
+    status,jobs=github('/repos/'+CONTROL+f"/actions/runs/{writer['id']}/attempts/1/jobs?per_page=100")
+    expected={name:('success' if name in ('auto-intake','auto-assets','auto-dev') else
+                   'failure' if name=='auto-prod' else 'skipped') for name in workflow['jobs']}
+    require(status==200 and jobs['total_count']==len(jobs['jobs'])==len(expected) and
+            {j['name']:j['conclusion'] for j in jobs['jobs']}==expected and
+            all((j['run_id'],j['head_sha'],j['status'],j['run_attempt'])==
+                (writer['id'],PROD_R4['writer_sha'],'completed',1) for j in jobs['jobs']),
+            'PROD_COMPLETION_WRITER_JOBS')
+    status,rules=github('/repos/'+CONTROL+'/rulesets/26657290')
+    require(status==200 and rules['enforcement']=='active' and
+            rules['conditions']['ref_name']==dict(include=[CONTROL_REF],exclude=[]) and
+            len(rules['rules'])==3 and {r['type'] for r in rules['rules']}=={'update','deletion','non_fast_forward'},
+            'PROD_COMPLETION_PROTECTION')
+    accepted=config['accepted'];lock=accepted['input']
+    require(config['cid']==PROD_R4['cid'] and
+            (accepted['ledger_commit'],accepted['record_sha256'],accepted['authority_commit'],accepted['assets_tip'],
+             accepted['witness_commit'],accepted['registry_sha256'])==
+            (PROD_R4['ledger'],PROD_R4['record'],PROD_R4['assets'],PROD_R4['assets'],PROD_R4['witness'],PROD_R4['registry']) and
+            lock['archive_sha256']==PROD_R4['archive'] and
+            lock['provider']==dict(release_id=PROD_R4['release'],asset_id=PROD_R4['asset'],tag='r18h-dev-'+PROD_R4['record']),
+            'PROD_COMPLETION_ACCEPTED_INPUT')
+    for repo,ref,wanted in ((CONTROL,LEDGER,PROD_R4['ledger']),
+                            (ASSETS,MAIN,PROD_R4['assets']),(ASSETS,WITNESS,PROD_R4['witness'])):
+        status,row=github('/repos/'+repo+'/git/ref/'+ref.removeprefix('refs/'))
+        require(status==200 and (row['ref'],row['object']['type'],row['object']['sha'])==(ref,'commit',wanted),
+                'PROD_COMPLETION_ACCEPTED_REF')
+    require(tip==env['PROD_WORKFLOW_COMMIT'] and tip!=PROD_R4['previous_sha'] and
+            digest(data(prod_workflow(PROD,tip,env['PROD_ACTIONS_TOKEN'])))==PROD_R4['workflow'],
+            'PROD_COMPLETION_WORKFLOW')
+    status,comparison=github('/repos/'+PROD+'/compare/'+PROD_R4['previous_sha']+'...'+tip,env['PROD_ACTIONS_TOKEN'])
+    require(status==200 and comparison['status']=='ahead' and comparison['total_commits']==1 and
+            comparison['merge_base_commit']['sha']==PROD_R4['previous_sha'] and
+            [f['filename'] for f in comparison['files']]==['.github/workflows/hugo.yml'],'PROD_COMPLETION_SOURCE')
+    status,prior=github('/repos/'+PROD+f"/actions/runs/{PROD_R4['previous_run']}/attempts/1",env['PROD_ACTIONS_TOKEN'])
+    require(status==200 and (prior['id'],prior['workflow_id'],prior['run_attempt'],prior['repository']['id'],
+            prior['actor']['id'],prior['event'],prior['head_branch'],prior['path'].split('@',1)[0],
+            prior['head_sha'],prior['status'],prior['conclusion'],prior['display_title'])==
+            (PROD_R4['previous_run'],PROD_WORKFLOW,1,PROD_ID,353092585,'workflow_dispatch','main',
+             '.github/workflows/hugo.yml',PROD_R4['previous_sha'],'completed','failure','PROD '+PROD_R4['cid']),
+            'PROD_COMPLETION_PRIOR_IDENTITY')
+    status,jobs=github('/repos/'+PROD+f"/actions/runs/{prior['id']}/attempts/1/jobs?per_page=100",env['PROD_ACTIONS_TOKEN'])
+    require(status==200 and jobs['total_count']==len(jobs['jobs'])==3 and
+            {j['name']:j['conclusion'] for j in jobs['jobs']}==dict(build='failure',deploy='skipped',verify='skipped') and
+            all((j['run_id'],j['head_sha'],j['status'],j['run_attempt'])==
+                (prior['id'],PROD_R4['previous_sha'],'completed',1) for j in jobs['jobs']),
+            'PROD_COMPLETION_PRIOR_JOBS')
+    build,=[j for j in jobs['jobs'] if j['name']=='build']
+    expected_steps={s['name']:'skipped' for s in prod_workflow(PROD,PROD_R4['previous_sha'],env['PROD_ACTIONS_TOKEN'])['jobs']['build']['steps']}
+    expected_steps.update({'Checkout current source':'success','Verify bound build source':'failure'})
+    for name,conclusion in expected_steps.items():
+        steps=[s for s in build['steps'] if s['name']==name]
+        require(len(steps)==1 and steps[0]['status']=='completed' and steps[0]['conclusion']==conclusion,
+                'PROD_COMPLETION_PREBUILD_REQUIRED')
+    require(all(not j.get('steps') for j in jobs['jobs'] if j['name'] in ('deploy','verify')),
+            'PROD_COMPLETION_PREBUILD_REQUIRED')
+    status,history=github('/repos/'+PROD+'/actions/workflows/'+str(PROD_WORKFLOW)+'/runs?branch=main&per_page=100',
+                          env['PROD_ACTIONS_TOKEN'])
+    require(status==200 and type(history) is dict and type(history.get('total_count')) is int and
+            history['total_count']==len(history['workflow_runs']) and
+            len({r['id'] for r in history['workflow_runs']})==history['total_count'] and
+            sum(r['id']==prior['id'] for r in history['workflow_runs'])==1 and
+            all(r['status']=='completed' and r['run_number']<=prior['run_number'] for r in history['workflow_runs']) and
+            [r['id'] for r in history['workflow_runs'] if r['display_title']=='PROD '+PROD_R4['cid']]==[prior['id']],
+            'PROD_COMPLETION_PRIOR_HISTORY')
+    prior_summary,=[r for r in history['workflow_runs'] if r['id']==prior['id']]
+    require(all(prior_summary[k]==prior[k] for k in identity_fields),'PROD_COMPLETION_PRIOR_HISTORY')
+    status,deployments=github('/repos/'+PROD+'/deployments?environment=github-pages&per_page=100',env['PROD_ACTIONS_TOKEN'])
+    require(status==200 and type(deployments) is list and 0<len(deployments)<100 and
+            (deployments[0]['id'],deployments[0]['sha'],deployments[0]['environment'])==
+            (PROD_R4['deployment'],PROD_R4['old_pages_sha'],'github-pages') and
+            all(d['created_at']<prior['created_at'] for d in deployments),'PROD_COMPLETION_DEPLOYMENTS')
+    old=dict(cid=PROD_R4['old_cid'],accepted=dict(registry_sha256=PROD_R4['old_registry']))
+    require(prod_published_source(env,old)==dict(run=PROD_R4['old_pages'],source=PROD_R4['old_pages_sha']),
+            'PROD_COMPLETION_PUBLIC_BASELINE')
+    return prior
+
 
 def prod_main(env):
     require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_REPOSITORY']==CONTROL and env['GITHUB_REPOSITORY_ID']==str(CONTROL_ID) and
             env['GITHUB_REF']==CONTROL_REF and env['GITHUB_REF_PROTECTED']=='true' and env['GITHUB_ACTOR_ID']==str(gb.CP2B_OWNER_ID) and
             env['GITHUB_RUN_ATTEMPT']=='1' and env['GITHUB_EVENT_NAME']=='workflow_dispatch' and
             env['GITHUB_WORKFLOW_REF']==CONTROL+'/.github/workflows/shared-media.yml@'+CONTROL_REF and
-            env['GITHUB_JOB']=='prod-only' and env.get('PROD_VERIFY_ONLY')=='true','PROD_CONTROL_CONTEXT')
-    params=parse(Path(env['GITHUB_EVENT_PATH']).read_bytes())['inputs']
-    require(set(params)<={'mode','record_sha256','source_run','private_run','relay_run'} and params['mode']=='prod' and
-            gb.sha(params['record_sha256']) and all(params.get(k,'')=='' for k in ('source_run','private_run','relay_run')),'PROD_CONTROL_INPUT')
+            env['GITHUB_JOB']=='prod-only','PROD_CONTROL_CONTEXT')
+    params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes(),object_pairs_hook=prod_event_object)['inputs']
+    require(type(params) is dict and set(params)<={'mode','record_sha256','source_run','private_run','relay_run'} and
+            params.get('mode') in ('prod','prod-complete') and
+            gb.sha(params.get('record_sha256')) and all(params.get(k,'')=='' for k in ('source_run','private_run','relay_run')),'PROD_CONTROL_INPUT')
+    complete=params['mode']=='prod-complete'
+    require(env.get('PROD_VERIFY_ONLY')==('false' if complete else 'true') and
+            (not complete or params['record_sha256']==PROD_R4['record']),'PROD_CONTROL_ROLE')
     row=control_run(int(env['GITHUB_RUN_ID']))
     require(row['head_sha']==env['GITHUB_WORKFLOW_SHA'] and row['status']=='in_progress' and
-            row['display_title']=='BGZONA prod '+params['record_sha256'],'PROD_CONTROL_IDENTITY')
+            row['display_title']=='BGZONA prod '+params['record_sha256']+(':complete' if complete else ''),
+            'PROD_CONTROL_IDENTITY')
     status,history=github('/repos/'+CONTROL+'/actions/workflows/408732936/runs?per_page=100')
     require(status==200 and all(r['id']==row['id'] or r['status']=='completed' for r in history['workflow_runs']),'PROD_CONTROL_CONCURRENT')
     writers=[r for r in history['workflow_runs'] if r['id']!=row['id'] and
              r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume '))]
-    require(writers and max(writers,key=lambda r:r['run_number'])['conclusion']=='success','PROD_WRITER_UNRESOLVED')
+    if complete:prod_completion_claim(row,history)
+    else:
+        require(writers and max(writers,key=lambda r:r['run_number'])['conclusion']=='success','PROD_WRITER_UNRESOLVED')
     for prior in history['workflow_runs']:
         if prior['id']!=row['id'] and prior['display_title'].startswith('BGZONA prod '):prod_consumer(prior)
     item=proposal(params['record_sha256'],normal=True);trust,packet=prod_input(env,item,all_public=True)
-    dispatch_prod(env,trust,verify_only=True)
+    dispatch_prod(env,trust,verify_only=not complete,complete=complete)
     from auto_intake import verify_public_result
     checked=verify_public_result(packet,base='https://bgzona.win')
-    print('PROD_VERIFY_ONLY_ACCEPTED',packet['cid'],len(checked),flush=True)
+    print('PROD_COMPLETION_ACCEPTED' if complete else 'PROD_VERIFY_ONLY_ACCEPTED',packet['cid'],len(checked),flush=True)
 
 def main(env):
     inputs=parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes()).get("inputs",{})
-    if inputs.get('mode')=='prod':return prod_main(env)
+    if inputs.get('mode') in ('prod','prod-complete'):return prod_main(env)
     if inputs.get("mode") in ("auto", "auto-resume", "f1-resume"):
         from auto_intake import main as auto_main
         return auto_main(env)
