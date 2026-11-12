@@ -1091,8 +1091,223 @@ def prod_main(env):
     checked=verify_public_result(packet,base='https://bgzona.win')
     print('PROD_COMPLETION_ACCEPTED' if complete else 'PROD_VERIFY_ONLY_ACCEPTED',packet['cid'],len(checked),flush=True)
 
+def consumer_read(repo, path, token=None):
+    status,row=github('/repos/'+repo+path,token)
+    require(status==200 and isinstance(row,dict),'CONSUMER_API_UNKNOWN')
+    return row
+
+
+def consumer_runs(repo, workflow, token=None, created=None):
+    from urllib.parse import quote
+    suffix='' if created is None else '&created='+quote('>='+created,safe='')
+    rows=[];total=None
+    for page in range(1,17):
+        batch=consumer_read(repo,f'/actions/workflows/{workflow}/runs?per_page=100&page={page}'+suffix,token)
+        count=batch.get('total_count');part=batch.get('workflow_runs')
+        require(type(count) is int and count>=0 and isinstance(part,list) and
+                (total is None or total==count),'CONSUMER_HISTORY_UNKNOWN')
+        total=count;rows.extend(part)
+        require(len(rows)<=total and len({r['id'] for r in rows})==len(rows),'CONSUMER_HISTORY_UNKNOWN')
+        if len(rows)==total:return rows
+        require(len(part)==100,'CONSUMER_HISTORY_INCOMPLETE')
+    raise ProviderStop('CONSUMER_HISTORY_LIMIT')
+
+
+def consumer_context(env, params):
+    stage=params['mode'].removeprefix('consumer-')
+    require(stage in ('dev','prod') and gb.sha(params.get('record_sha256')) and
+            set(params)<={'mode','record_sha256','source_run','private_run','relay_run'} and
+            all(params.get(k,'')=='' for k in ('source_run','private_run','relay_run')),'CONSUMER_INPUT')
+    job='auto-'+stage;repo=DEV if stage=='dev' else PROD
+    require(env['GITHUB_ACTIONS']=='true' and env['GITHUB_REPOSITORY']==CONTROL and
+            env['GITHUB_REPOSITORY_ID']==str(CONTROL_ID) and env['GITHUB_REF']==CONTROL_REF and
+            env['GITHUB_REF_PROTECTED']=='true' and env['GITHUB_ACTOR_ID']==str(gb.CP2B_OWNER_ID) and
+            env['GITHUB_RUN_ATTEMPT']=='1' and env['GITHUB_EVENT_NAME']=='workflow_dispatch' and
+            env['GITHUB_WORKFLOW_REF']==CONTROL+'/.github/workflows/shared-media.yml@'+CONTROL_REF and
+            env['GITHUB_JOB']==job and env.get('CONSUMER_APP_SLUG')=='bgzona-r18h-private-dispatch',
+            'CONSUMER_CONTEXT')
+    title='BGZONA consumer-'+stage+' '+params['record_sha256']
+    row=control_run(int(env['GITHUB_RUN_ID']),{title})
+    require(row['workflow_id']==408732936 and row['status']=='in_progress' and
+            row['head_sha']==env['GITHUB_WORKFLOW_SHA'] and
+            row.get('triggering_actor',row['actor'])['id']==gb.CP2B_OWNER_ID,'CONSUMER_IDENTITY')
+    from auto_intake import consumer_workflow
+    workflow=consumer_workflow(CONTROL,row['head_sha'])
+    target=workflow['jobs'][job]
+    require(target['permissions']==dict(contents='write' if stage=='dev' else 'read',actions='read') and
+            target['environment']=='r18h-control','CONSUMER_PERMISSIONS')
+    app,=[s for s in target['steps'] if s.get('id')==stage+'-app']
+    require(app['uses']=='actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1' and
+            app['with']=={'client-id':'${{ vars.BGZONA_R_CLIENT_ID }}',
+                'private-key':'${{ secrets.BGZONA_R_PRIVATE_KEY }}','owner':'malin-bg',
+                'repositories':repo.split('/')[1],'permission-actions':'write'},'CONSUMER_PERMISSIONS')
+    token=env['DEV_ACTIONS_TOKEN' if stage=='dev' else 'PROD_ACTIONS_TOKEN']
+    identity=consumer_read(repo,'',token)
+    require((identity['id'],identity['full_name'],identity['archived'])==
+            (1149689018 if stage=='dev' else PROD_ID,repo,False),'CONSUMER_REPOSITORY')
+    rules=consumer_read(CONTROL,'/rulesets/26657290')
+    require(rules['enforcement']=='active' and rules['target']=='branch' and rules['bypass_actors']==[] and
+            rules['conditions']['ref_name']==dict(include=[CONTROL_REF],exclude=[]) and
+            len(rules['rules'])==3 and {r['type'] for r in rules['rules']}=={'update','deletion','non_fast_forward'},
+            'CONSUMER_PROTECTIONS')
+    history=consumer_runs(CONTROL,408732936)
+    require(sum(r['id']==row['id'] for r in history)==1 and
+            all(r['id']==row['id'] or r['status']=='completed' for r in history) and
+            [r['id'] for r in history if r['display_title']==title]==[row['id']],
+            'CONSUMER_REPLAY_OR_CONCURRENT')
+    return stage,row,history
+
+
+def consumer_producer(item, current, history):
+    from auto_intake import consumer_workflow,completion_ancestor
+    writers=[r for r in history if r['id']!=current['id'] and
+             r['display_title'].startswith(('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume '))]
+    require(writers,'CONSUMER_PRODUCER_UNKNOWN');writer=max(writers,key=lambda r:r['run_number'])
+    prefix=next(p for p in ('BGZONA auto ','BGZONA auto-resume ','BGZONA f1-resume ') if writer['display_title'].startswith(p))
+    link=writer['display_title'][len(prefix):].split(':')
+    require(len(link)==2 and link[0]==str(item['source_run']) and link[1].isdigit(),'CONSUMER_SOURCE_LINK')
+    record_sha=digest(data(item['record']))
+    require(all(r['id']==current['id'] or r['run_number']<=writer['run_number'] or
+                r['display_title'] in ('BGZONA consumer-dev '+record_sha,'BGZONA consumer-prod '+record_sha) and
+                r['status']=='completed' and r['conclusion']=='success' for r in history),
+            'CONSUMER_LATER_UNRESOLVED')
+    actual=consumer_read(CONTROL,f"/actions/runs/{writer['id']}/attempts/1")
+    require(all(actual[k]==writer[k] for k in ('id','head_sha','status','conclusion','display_title','run_number')) and
+            (actual['workflow_id'],actual['run_attempt'],actual['event'],actual['repository']['id'],
+             actual['actor']['id'],actual.get('triggering_actor',actual['actor'])['id'],actual['head_branch'],
+             actual['path'].split('@',1)[0],actual['status'])==
+            (408732936,1,'workflow_dispatch',CONTROL_ID,gb.CP2B_OWNER_ID,gb.CP2B_OWNER_ID,
+             'automation-control','.github/workflows/shared-media.yml','completed') and
+            actual['conclusion'] in ('success','failure'),'CONSUMER_PRODUCER_IDENTITY')
+    workflow=consumer_workflow(CONTROL,actual['head_sha'])
+    jobs=consumer_read(CONTROL,f"/actions/runs/{actual['id']}/attempts/1/jobs?per_page=100")
+    require(jobs['total_count']==len(jobs['jobs'])==len(workflow['jobs']) and
+            {j['name'] for j in jobs['jobs']}==set(workflow['jobs']) and
+            all((j['run_id'],j['head_sha'],j['run_attempt'],j['status'])==
+                (actual['id'],actual['head_sha'],1,'completed') for j in jobs['jobs']) and
+            all(next(j for j in jobs['jobs'] if j['name']==name)['conclusion']=='success'
+                for name in ('auto-intake','auto-assets')) and
+            next(j for j in jobs['jobs'] if j['name']=='auto-continue')['conclusion'] in ('success','skipped'),
+            'CONSUMER_PRODUCER_NOT_ACCEPTED')
+    completion_ancestor(CONTROL,actual['head_sha'],current['head_sha'])
+    return actual
+
+
+def consumer_config(env, item, trust, stage, prod_tip=None):
+    config=parse(trust);a=config['accepted'];record=item['record']
+    require(set(config)=={'schema','control_id','assets_id','ledger_genesis','accepted','cid'} and
+            config['ledger_genesis']==parse(BOOTSTRAP.read_bytes())['record_sha256'] and
+            config['schema']==1 and config['control_id']==CONTROL_ID and config['assets_id']==ASSETS_ID and
+            gb.sha(config['cid']) and digest(data(a))==config['cid'] and a['channel']==stage and
+            a['record_sha256']==digest(data(record)) and a['authority_commit']==a['assets_tip']==record['primary_main'] and
+            a['witness_commit']==record['primary_witness'] and a['registry_sha256']==record['registry_sha256'] and
+            a['input']['repository']==(DEV if stage=='dev' else PROD) and
+            a['input']['provider']['tag']=='r18h-dev-'+a['record_sha256'],'CONSUMER_TRUST')
+    refs=[(CONTROL,CONTROL_REF,env['GITHUB_WORKFLOW_SHA']),
+          (CONTROL,LEDGER,a['ledger_commit']),(ASSETS,MAIN,a['assets_tip']),
+          (ASSETS,WITNESS,a['witness_commit']),(DEV,'refs/heads/main',env['C3_DEV_MAIN'])]
+    if prod_tip is not None:refs.append((PROD,'refs/heads/main',prod_tip))
+    for repo,ref,sha in refs:
+        row=consumer_read(repo,'/git/ref/'+ref.removeprefix('refs/'))
+        require(gb.oid(sha) and row.get('ref')==ref and isinstance(row.get('object'),dict) and
+                row['object'].get('type')=='commit' and row['object'].get('sha')==sha,'CONSUMER_REF_MOVED')
+    origin=consumer_read(CONTROL,'/git/commits/'+a['ledger_commit'])
+    require(origin['sha']==a['ledger_commit'],'CONSUMER_LEDGER_IDENTITY')
+    return config,origin['committer']['date']
+
+
+def consumer_target_runs(repo,workflow,pin,cid,created,token=None):
+    for state in ('in_progress','queued','requested','waiting','pending'):
+        row=consumer_read(repo,f'/actions/workflows/{workflow}/runs?status={state}&per_page=100',token)
+        require(type(row.get('total_count')) is int and row['total_count']==0 and row.get('workflow_runs')==[],
+                'CONSUMER_TARGET_ACTIVE_OR_UNKNOWN')
+    rows=consumer_runs(repo,workflow,token,created);matches=[]
+    for row in rows:
+        require((row['workflow_id'],row['run_attempt'],row['repository']['id'],row['actor']['id'],
+                 row.get('triggering_actor',row['actor'])['id'],row['event'],row['head_branch'],row['head_sha'],row['status'])==
+                (workflow,1,1149689018 if repo==DEV else PROD_ID,353092585,353092585,
+                 'workflow_dispatch','main',pin,'completed'),'CONSUMER_TARGET_HISTORY')
+        if row['conclusion']=='startup_failure':
+            jobs=consumer_read(repo,f"/actions/runs/{row['id']}/attempts/1/jobs?per_page=100",token)
+            require(jobs.get('total_count')==0 and jobs.get('jobs')==[],'CONSUMER_STARTUP_NOT_EMPTY')
+            artifacts=consumer_read(repo,f"/actions/runs/{row['id']}/artifacts?per_page=100",token)
+            require(artifacts.get('total_count')==0 and artifacts.get('artifacts')==[],'CONSUMER_STARTUP_NOT_EMPTY')
+            continue # Independently proven zero-job attempt cannot have deployed; never becomes SUCCESS.
+        require(row['conclusion']=='success' and row['display_title']==('DEV ' if repo==DEV else 'PROD ')+cid,
+                'CONSUMER_PRIOR_UNKNOWN')
+        matches.append(row)
+    require(len(matches)<=1,'CONSUMER_TARGET_DUPLICATE')
+    return matches
+
+
+def consumer_dev_success(env,config,created):
+    rows=consumer_target_runs(DEV,232539432,env['C3_DEV_MAIN'],config['cid'],created)
+    require(len(rows)==1,'CONSUMER_DEV_NOT_SUCCESS');row,=rows
+    jobs=consumer_read(DEV,f"/actions/runs/{row['id']}/attempts/1/jobs?per_page=100")
+    require(jobs['total_count']==len(jobs['jobs'])==2 and
+            {j['name']:j['conclusion'] for j in jobs['jobs']}==dict(build='success',deploy='success') and
+            all((j['run_id'],j['head_sha'],j['run_attempt'],j['status'])==
+                (row['id'],env['C3_DEV_MAIN'],1,'completed') for j in jobs['jobs']) and
+            all(any(s['name']==name and s['conclusion']=='success' for j in jobs['jobs'] for s in j['steps'])
+                for name in ('Verify accepted output immediately before upload','Upload exactly accepted Pages output',
+                             'Deploy this run accepted Pages artifact','Verify public DEV CID, page and OG against the seal')),
+            'CONSUMER_DEV_SEAL')
+    deployments=consumer_read(DEV,f"/actions/runs/{row['id']}/artifacts?per_page=100")
+    pages=[a for a in deployments.get('artifacts',[]) if a['name']=='github-pages']
+    require(deployments.get('total_count')==len(deployments.get('artifacts',[])) and len(pages)==1 and
+            gb.positive(pages[0]['id']) and gb.positive(pages[0]['size_in_bytes']) and
+            (pages[0]['workflow_run']['id'],pages[0]['workflow_run']['repository_id'],
+             pages[0]['workflow_run']['head_branch'],pages[0]['workflow_run']['head_sha'])==
+                (row['id'],1149689018,'main',env['C3_DEV_MAIN']) and
+            pages[0]['digest'].startswith('sha256:') and gb.sha(pages[0]['digest'][7:]),'CONSUMER_DEV_ARTIFACT')
+    return row['id']
+
+
+def consumer_main(env):
+    from copy import deepcopy
+    from auto_intake import verify_public_result
+    params=json.loads(Path(env['GITHUB_EVENT_PATH']).read_bytes(),object_pairs_hook=prod_event_object)['inputs']
+    stage,current,history=consumer_context(env,params)
+    item=proposal(params['record_sha256'],normal=True)
+    # The unchanged native final_state()/dev_input() verifies the COMPLETE D3/E4M accepted prefix.
+    producer=consumer_producer(item,current,history)
+    if stage=='dev':
+        trust=dev_input(env,'dev-pin',item,normal=True,all_public=True)
+        packet=parse((Path(env['RUNNER_TEMP'])/'r18h-dev-input/public-verification.json').read_bytes())
+        config,created=consumer_config(env,item,trust,'dev')
+        require(producer['created_at']<=created<=producer['updated_at'],'CONSUMER_PRODUCER_ORDER')
+        require(not consumer_target_runs(DEV,232539432,env['C3_DEV_MAIN'],config['cid'],created,env['DEV_ACTIONS_TOKEN']),
+                'CONSUMER_ALREADY_DEPLOYED')
+    else:
+        trust,packet=prod_input(env,item,all_public=True)
+        tip=prod_source(env,env['PROD_ACTIONS_TOKEN'])
+        config,created=consumer_config(env,item,trust,'prod',tip)
+        require(producer['created_at']<=created<=producer['updated_at'],'CONSUMER_PRODUCER_ORDER')
+        dev=deepcopy(config);dev['accepted']['channel']='dev';dev['accepted']['input']['repository']=DEV
+        dev['cid']=digest(data(dev['accepted']));dev_packet=deepcopy(packet);dev_packet['cid']=dev['cid']
+        consumer_dev_success(env,dev,created)
+        verify_public_result(dev_packet,base='https://dev.bgzona.win')
+        require(not consumer_target_runs(PROD,PROD_WORKFLOW,tip,config['cid'],created,env['PROD_ACTIONS_TOKEN']),
+                'CONSUMER_ALREADY_DEPLOYED')
+    require(packet['cid']==config['cid'] and packet['items'],'CONSUMER_PUBLIC_PACKET')
+    # One existing marker pattern + GitHub title history: UNKNOWN never sends again.
+    marker=Path(env['RUNNER_TEMP'])/('consumer-'+stage+'-'+params['record_sha256']+'.sent')
+    try:
+        with marker.open('xb') as handle:handle.write(data(dict(run=current['id'],cid=config['cid'])))
+    except FileExistsError:raise ProviderStop('CONSUMER_ALREADY_SENT') from None
+    consumer_config(env,item,trust,stage,tip if stage=='prod' else None)
+    if stage=='dev':
+        c3_dispatch_dev(env,trust)
+        consumer_dev_success(env,config,created)
+    else:dispatch_prod(env,trust)
+    verify_public_result(packet,base='https://dev.bgzona.win' if stage=='dev' else 'https://bgzona.win')
+    consumer_config(env,item,trust,stage,tip if stage=='prod' else None)
+    print('CONSUMER_'+stage.upper()+'_VERIFIED',params['record_sha256'],config['cid'],flush=True)
+
+
 def main(env):
     inputs=parse(Path(env["GITHUB_EVENT_PATH"]).read_bytes()).get("inputs",{})
+    if inputs.get("mode") in ("consumer-dev","consumer-prod"):return consumer_main(env)
     if inputs.get('mode') in ('prod','prod-complete'):return prod_main(env)
     if inputs.get("mode") in ("auto", "auto-resume", "f1-resume"):
         from auto_intake import main as auto_main
