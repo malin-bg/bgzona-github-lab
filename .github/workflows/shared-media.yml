@@ -23,7 +23,8 @@
             "prod",
             "prod-complete",
             "consumer-dev",
-            "consumer-prod"
+            "consumer-prod",
+            "app-source-read"
           ],
           "required": true
         },
@@ -792,6 +793,55 @@
           "slot": "${{ fromJSON(needs.auto-intake.outputs.slots || '[]') }}"
         }
       }
+    },
+    "app-source-read": {
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'app-source-read' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.private_run == '' && inputs.relay_run == ''",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "environment": "r18h-control",
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Check protected execution context",
+          "shell": "bash",
+          "env": {
+            "RS4K_MODE": "${{ inputs.mode }}",
+            "RS4K_WORKFLOW_SHA": "${{ github.workflow_sha }}"
+          },
+          "run": "python3 -I -B tools/rs4k/private_read.py --guard\n"
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-private-intake",
+            "permission-contents": "read"
+          }
+        },
+        {
+          "name": "Single PRIVATE Git read",
+          "shell": "bash",
+          "env": {
+            "RS4K_MODE": "${{ inputs.mode }}",
+            "RS4K_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "RS4K_TOKEN": "${{ steps.app.outputs.token }}"
+          },
+          "run": "python3 -I -B tools/rs4k/private_read.py\n"
+        }
+      ]
     }
   }
 }
