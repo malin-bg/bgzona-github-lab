@@ -24,23 +24,34 @@
           }
         },
         {
-          "name": "Real B runtime synthetic integration",
+          "name": "Existing P3 import dependencies",
           "shell": "bash",
-          "run": "python3 -m venv \"$RUNNER_TEMP/rs4i-venv\"\n\"$RUNNER_TEMP/rs4i-venv/bin/python\" -m pip --isolated --disable-pip-version-check install --index-url https://pypi.org/simple --only-binary=:all: --no-deps --retries 0 --timeout 30 Pillow==13.0.0\n\"$RUNNER_TEMP/rs4i-venv/bin/python\" -B tools/rs4i/integration.py --report \"$RUNNER_TEMP/rs4i-report/report.json\"\n"
+          "run": "python3 -m venv \"$RUNNER_TEMP/rs4j-venv\"\n\"$RUNNER_TEMP/rs4j-venv/bin/python\" -m pip --isolated --disable-pip-version-check install --index-url https://pypi.org/simple --only-binary=:all: --no-deps --retries 0 --timeout 30 Pillow==13.0.0\n"
         },
         {
-          "name": "Upload synthetic integration report",
+          "name": "Single synthetic authenticated HTTPS push and readback",
+          "shell": "bash",
+          "env": {
+            "RS4J_TOKEN": "${{ github.token }}"
+          },
+          "run": "\"$RUNNER_TEMP/rs4j-venv/bin/python\" -B tools/rs4j/smoke.py --report \"$RUNNER_TEMP/rs4j-report/report.json\"\n"
+        },
+        {
+          "name": "Upload synthetic transport report",
           "if": "${{ always() }}",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "name": "rs4i-runtime-report",
-            "path": "${{ runner.temp }}/rs4i-report/report.json",
+            "name": "rs4j-https-report",
+            "path": "${{ runner.temp }}/rs4j-report/report.json",
             "if-no-files-found": "error",
             "retention-days": 7,
             "overwrite": false
           }
         }
-      ]
+      ],
+      "permissions": {
+        "contents": "write"
+      }
     }
   }
 }
