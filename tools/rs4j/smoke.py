@@ -31,11 +31,11 @@ def transfer(channel,writer,reader,commit,marker,inspect,progress):
  # Unknown/failed response gets read-only reconciliation, never a second send.
  seen=channel.observe(reader)
  if seen!={'status':'KNOWN','head':commit}:
-  return {'status':'UNKNOWN' if seen.get('status')=='UNKNOWN' else 'STOP','push_calls':1,'retry':False,'push_exit_code':q.returncode,'code':'REMOTE_NOT_CONFIRMED'}
+  return {'status':'UNKNOWN' if seen.get('status')=='UNKNOWN' else 'STOP','push_calls':1,'retry':False,'push_exit_code':q.returncode,'push_failure_category':getattr(q,'failure_category','UNKNOWN'),'code':'REMOTE_NOT_CONFIRMED'}
  channel.run(reader,'fetch','--no-tags',URL,TARGET)
  inspect(reader,commit)
  need(channel.observe(reader)==seen,'REMOTE_MOVED_AFTER_READBACK')
- return {'status':'PASS','push_calls':1,'retry':False,'push_exit_code':q.returncode,'independent_readback':'PASS','response_reconciled':q.returncode!=0}
+ return {'status':'PASS','push_calls':1,'retry':False,'push_exit_code':q.returncode,'push_failure_category':getattr(q,'failure_category','UNKNOWN'),'independent_readback':'PASS','response_reconciled':q.returncode!=0}
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--report',required=True);args=parser.parse_args()

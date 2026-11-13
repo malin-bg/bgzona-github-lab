@@ -10,6 +10,8 @@ def main():
   if not line:break
   if '=' not in line:return
   key,value=line.split('=',1)
+  # Git protocol arrays are informational; never credential scope fields.
+  if key in ('capability[]','wwwauth[]','state[]'):continue
   if key in fields:return
   fields[key]=value
  url=urlsplit(os.environ.get('BGZONA_AUTH_URL',''))

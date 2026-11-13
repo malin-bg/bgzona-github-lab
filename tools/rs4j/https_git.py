@@ -84,6 +84,8 @@ class Channel:
    if check:raise P.Stop('HTTPS_GIT_UNKNOWN') from None
    return subprocess.CompletedProcess(argv,124,b'',b'HTTPS_GIT_UNKNOWN')
   # Raw server errors are not reports/logs and may contain arbitrary text. Never export them.
+  # Only an exact, fixed Git message is classified. Never export raw bytes.
+  q.failure_category='CREDENTIAL_UNAVAILABLE' if q.returncode!=0 and q.stderr.strip()==b'fatal: unable to get password from user' else 'UNKNOWN'
   q.stderr=b'' if q.returncode==0 else b'HTTPS_GIT_FAILED'
   if check:P.need(q.returncode==0,'HTTPS_GIT_FAILED')
   return q
