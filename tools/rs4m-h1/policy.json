@@ -24,16 +24,32 @@
     }
   },
   "private_workflow_sha256": "42737a661e2c5671e48d72fc453bbbce66715bcfed32cd3cb6b3655cbd452d1b",
-  "prior_private_failure": {
-    "run": 43722678769,
-    "workflow_id": 419182651,
-    "prepare_job": 132837845453,
-    "writer_job": 132837887530,
-    "workflow_sha256": "963c29217d564c7f244da2b90c2001e0a2f4ea01397a74308ade0f0cbd121d2a"
-  },
   "h1g_seed_tips": {
     "source": "03c878933710725a4a1ca68ee2671d3ad1e126f7",
     "state": "c87ab407c5fec83f29c9edd259fda7b50d5c7571",
     "data": "564c405279c89e990c9345ccf7c54e2bf38c4470"
+  },
+  "prior_private_failures": [
+    {
+      "run": 43722678769,
+      "workflow_id": 419182651,
+      "prepare_job": 132837845453,
+      "writer_job": 132837887530,
+      "workflow_sha256": "963c29217d564c7f244da2b90c2001e0a2f4ea01397a74308ade0f0cbd121d2a",
+      "failure_step": "Acquire exact protected public code"
+    },
+    {
+      "run": 43727037807,
+      "workflow_id": 419182651,
+      "prepare_job": 132851125527,
+      "writer_job": 132851157259,
+      "workflow_sha256": "42737a661e2c5671e48d72fc453bbbce66715bcfed32cd3cb6b3655cbd452d1b",
+      "failure_step": "Verify execution and immutable code"
+    }
+  ],
+  "control_protection_authority": {
+    "mode": "owner-admin-preflight-and-live-effective",
+    "expected_bypass_actors": [],
+    "no_ruleset_update_since_run_creation": true
   }
 }

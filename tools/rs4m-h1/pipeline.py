@@ -3,6 +3,7 @@ No dispatch, generic orchestration, new publisher, issuer or deployment code.
 """
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
 import argparse,base64,hashlib,json,os,re,subprocess,sys,urllib.request,urllib.error,zipfile
 ROOT=Path(__file__).resolve().parent
 class Stop(ValueError):pass
@@ -73,13 +74,12 @@ def stage_context(policy,stage):
  need(re.fullmatch('[a-f0-9]{40}',code) is not None,'CODE_COMMIT')
  # The payload is a selector; actual protected refs/settings establish its authority.
  need(ref(policy['lab_repo'],policy['control_ref'],os.environ['GH_TOKEN'])==code and ref(policy['lab_repo'],'refs/heads/main',os.environ['GH_TOKEN'])==code,'TRUSTED_CODE_REF_MOVED')
- rules=api(policy['lab_repo'],'/rulesets/'+str(policy['ruleset_id']),os.environ['GH_TOKEN'])
- need(rules.get('enforcement')=='active' and rules.get('conditions')==policy['ruleset_conditions'] and rules.get('bypass_actors')==[] and sorted(x['type'] for x in rules.get('rules',[]))==['deletion','non_fast_forward','update'],'CONTROL_PROTECTION')
  checkout=subprocess.run(['git','--no-optional-locks','-C',str(ROOT.parents[1]),'rev-parse','HEAD'],capture_output=True)
  need(checkout.returncode==0 and checkout.stdout.decode().strip()==code,'EXECUTABLE_CODE_PIN')
  workflow_sha=os.environ.get('H1_WORKFLOW_SHA');need(re.fullmatch('[a-f0-9]{40}',workflow_sha or '') and workflow_sha==os.environ.get('GITHUB_SHA'),'WORKFLOW_CODE_CONTEXT')
  current=api(repo,'/actions/runs/'+os.environ['GITHUB_RUN_ID'],os.environ['GH_TOKEN'])
  need(str(current.get('id'))==os.environ['GITHUB_RUN_ID'] and current.get('run_attempt')==1 and str(current.get('actor',{}).get('id'))==policy['owner_actor'] and current.get('event')=='workflow_dispatch' and current.get('repository',{}).get('full_name')==repo and str(current.get('repository',{}).get('id'))==policy['private_id' if private else 'lab_id'] and current.get('head_sha')==workflow_sha and current.get('head_branch')==expected_ref.removeprefix('refs/heads/') and path_matches(current.get('path'),policy['private_workflow' if private else 'shared_workflow'],expected_ref.removeprefix('refs/heads/')),'LIVE_RUN_CONTEXT')
+ control_protection(policy,os.environ['GH_TOKEN'],current.get('created_at'))
  if private:
   raw=workflow_bytes(repo,policy['private_workflow'],workflow_sha,os.environ['GH_TOKEN']);need(digest(raw)==policy['private_workflow_sha256'],'PRIVATE_WORKFLOW_PIN')
  else:need(workflow_sha==code,'LAB_WORKFLOW_PIN')
@@ -99,31 +99,61 @@ def stage_context(policy,stage):
   need(active.get('total_count')==len(rows) and all(str(x['id'])==os.environ['GITHUB_RUN_ID'] for x in rows),'CONCURRENT_OR_UNKNOWN')
  return repo,code,event
 
+def control_protection(policy,token,run_created_at):
+ # Missing bypass metadata is not an empty list. The separately authorized OWNER
+ # preflight proves that hidden setting; this read-only job proves live rules.
+ authority=policy.get('control_protection_authority')
+ need(authority=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'CONTROL_AUTHORITY')
+ def instant(value):
+  need(isinstance(value,str),'CONTROL_TIMESTAMP')
+  try:parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+  except ValueError:raise Stop('CONTROL_TIMESTAMP') from None
+  need(parsed.tzinfo is not None,'CONTROL_TIMESTAMP');return parsed
+ created=instant(run_created_at);expected_types=['deletion','non_fast_forward','update']
+ def view(row):
+  need(isinstance(row,dict) and row.get('id')==policy['ruleset_id'] and row.get('target')=='branch' and row.get('source_type')=='Repository' and row.get('source')==policy['lab_repo'] and row.get('enforcement')=='active' and row.get('conditions')==policy['ruleset_conditions'],'CONTROL_PROTECTION')
+  rules=row.get('rules');need(isinstance(rules,list) and len(rules)==3 and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
+  if 'bypass_actors' in row:need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
+  updated=instant(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
+  return (updated,'LIVE_EMPTY' if 'bypass_actors' in row else 'OWNER_PREFLIGHT_ONLY')
+ path='/rulesets/'+str(policy['ruleset_id']);before=view(api(policy['lab_repo'],path,token))
+ branch=policy['control_ref'].removeprefix('refs/heads/');need(branch=='automation-control','CONTROL_REF')
+ effective=api(policy['lab_repo'],'/rules/branches/'+branch+'?per_page=100&page=1',token)
+ need(isinstance(effective,list) and len(effective)==3,'CONTROL_EFFECTIVE_RULES')
+ for row in effective:
+  need(isinstance(row,dict) and set(row)=={'type','ruleset_source_type','ruleset_source','ruleset_id'} and row.get('ruleset_id')==policy['ruleset_id'] and row.get('ruleset_source_type')=='Repository' and row.get('ruleset_source')==policy['lab_repo'],'CONTROL_EFFECTIVE_RULES')
+ need(sorted(row['type'] for row in effective)==expected_types,'CONTROL_EFFECTIVE_RULES')
+ need(view(api(policy['lab_repo'],path,token))==before,'CONTROL_CHANGED_DURING_CHECK')
+ return {'live_rules':'VERIFIED','bypass_authority':before[1]}
+
 def private_history(policy,current,token,history=None):
- # One explicitly authorized successor to the independently proven pre-candidate failure.
- prior=policy['prior_private_failure'];repo=policy['private_repo'];run_id=str(current.get('id'))
- need(run_id!=str(prior['run']) and current.get('workflow_id')==prior['workflow_id'] and current.get('run_attempt')==1,'PRIVATE_SUCCESSOR_IDENTITY')
+ # Exactly the two audited pre-publisher failures plus one separately authorized run.
+ priors=policy['prior_private_failures'];repo=policy['private_repo'];run_id=str(current.get('id'))
+ need(len(priors)==2 and {p['run'] for p in priors}=={43722678769,43727037807},'PRIOR_FAILURE_SCOPE')
+ prior_ids={str(p['run']) for p in priors}
+ need(run_id not in prior_ids and current.get('workflow_id')==419182651 and current.get('run_attempt')==1,'PRIVATE_SUCCESSOR_IDENTITY')
  if history is None:history=api(repo,'/actions/workflows/'+policy['private_workflow'].split('/')[-1]+'/runs?per_page=100',token)
  rows=history.get('workflow_runs',[])
- need(history.get('total_count')==len(rows)==2 and {str(r.get('id')) for r in rows}=={str(prior['run']),run_id},'REPLAY_OR_OTHER_H1_RUN')
- old=api(repo,'/actions/runs/'+str(prior['run']),token)
- need(old.get('id')==prior['run'] and old.get('workflow_id')==prior['workflow_id'] and old.get('run_attempt')==1 and old.get('status')=='completed' and old.get('conclusion')=='failure' and old.get('event')=='workflow_dispatch' and old.get('head_branch')=='main' and old.get('repository',{}).get('full_name')==repo and str(old.get('repository',{}).get('id'))==policy['private_id'] and str(old.get('actor',{}).get('id'))==policy['owner_actor'] and path_matches(old.get('path'),policy['private_workflow'],'main') and re.fullmatch('[a-f0-9]{40}',old.get('head_sha','')),'PRIOR_FAILURE_IDENTITY')
- for r in rows:
-  target=old if r['id']==prior['run'] else current
-  need(all(r.get(k)==target.get(k) for k in ('id','workflow_id','run_attempt','status','conclusion','event','head_branch','head_sha','path','created_at')) and r.get('actor',{}).get('id')==target.get('actor',{}).get('id'),'PRIVATE_HISTORY_CONTRADICTION')
- need(all(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',v or '') for v in (old.get('updated_at'),current.get('created_at'))) and old['updated_at']<current['created_at'],'PRIVATE_SUCCESSOR_ORDER')
- need(digest(workflow_bytes(repo,policy['private_workflow'],old['head_sha'],token))==prior['workflow_sha256'],'PRIOR_WORKFLOW_PIN')
- jobs=api(repo,'/actions/runs/'+str(prior['run'])+'/attempts/1/jobs?per_page=100',token);js=jobs.get('jobs',[])
- need(jobs.get('total_count')==len(js)==2 and {j.get('id') for j in js}=={prior['prepare_job'],prior['writer_job']},'PRIOR_FAILURE_JOBS')
- for j in js:
-  need(j.get('run_id')==prior['run'] and j.get('run_attempt')==1 and j.get('head_sha')==old['head_sha'] and j.get('status')=='completed','PRIOR_JOB_IDENTITY')
- prepare=next(j for j in js if j['id']==prior['prepare_job']);writer=next(j for j in js if j['id']==prior['writer_job'])
- need(prepare.get('name')=='H1 PRIVATE prepare' and prepare.get('conclusion')=='failure' and writer.get('name')=='H1 PRIVATE writer' and writer.get('conclusion')=='skipped' and writer.get('steps')==[],'PRIOR_FAILURE_BOUNDARY')
- steps=prepare.get('steps',[])
- expected=[('Set up job','success'),('Acquire exact protected public code','failure'),('Verify execution and immutable code','skipped'),('Pinned isolated Pillow runtime','skipped'),('Prepare PRIVATE candidate','skipped'),('Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02','skipped'),('Complete job','success')]
- need([(s.get('name'),s.get('conclusion')) for s in steps]==expected and all(s.get('status')=='completed' for s in steps),'PRIOR_FAILURE_STEPS')
- artifacts=api(repo,'/actions/runs/'+str(prior['run'])+'/artifacts?per_page=100',token)
- need(artifacts.get('total_count')==0 and artifacts.get('artifacts')==[],'PRIOR_FAILURE_ARTIFACTS')
+ need(history.get('total_count')==len(rows)==3 and {str(r.get('id')) for r in rows}==prior_ids|{run_id},'REPLAY_OR_OTHER_H1_RUN')
+ for prior in priors:
+  old=api(repo,'/actions/runs/'+str(prior['run']),token)
+  need(old.get('id')==prior['run'] and old.get('workflow_id')==419182651 and old.get('run_attempt')==1 and old.get('status')=='completed' and old.get('conclusion')=='failure' and old.get('event')=='workflow_dispatch' and old.get('head_branch')=='main' and old.get('repository',{}).get('full_name')==repo and str(old.get('repository',{}).get('id'))==policy['private_id'] and str(old.get('actor',{}).get('id'))==policy['owner_actor'] and path_matches(old.get('path'),policy['private_workflow'],'main') and re.fullmatch('[a-f0-9]{40}',old.get('head_sha','')),'PRIOR_FAILURE_IDENTITY')
+  row=next(r for r in rows if r['id']==prior['run'])
+  need(all(row.get(k)==old.get(k) for k in ('id','workflow_id','run_attempt','status','conclusion','event','head_branch','head_sha','path','created_at')) and row.get('actor',{}).get('id')==old.get('actor',{}).get('id'),'PRIVATE_HISTORY_CONTRADICTION')
+  need(all(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',v or '') for v in (old.get('updated_at'),current.get('created_at'))) and old['updated_at']<current['created_at'],'PRIVATE_SUCCESSOR_ORDER')
+  need(digest(workflow_bytes(repo,policy['private_workflow'],old['head_sha'],token))==prior['workflow_sha256'],'PRIOR_WORKFLOW_PIN')
+  jobs=api(repo,'/actions/runs/'+str(prior['run'])+'/attempts/1/jobs?per_page=100',token);js=jobs.get('jobs',[])
+  need(jobs.get('total_count')==len(js)==2 and {j.get('id') for j in js}=={prior['prepare_job'],prior['writer_job']},'PRIOR_FAILURE_JOBS')
+  for j in js:need(j.get('run_id')==prior['run'] and j.get('run_attempt')==1 and j.get('head_sha')==old['head_sha'] and j.get('status')=='completed','PRIOR_JOB_IDENTITY')
+  prepare=next(j for j in js if j['id']==prior['prepare_job']);writer=next(j for j in js if j['id']==prior['writer_job'])
+  need(prepare.get('name')=='H1 PRIVATE prepare' and prepare.get('conclusion')=='failure' and writer.get('name')=='H1 PRIVATE writer' and writer.get('conclusion')=='skipped' and writer.get('steps')==[],'PRIOR_FAILURE_BOUNDARY')
+  failure=prior['failure_step'];need(failure in ('Acquire exact protected public code','Verify execution and immutable code'),'PRIOR_FAILURE_SCOPE')
+  expected=[('Set up job','success'),('Acquire exact protected public code','failure' if failure=='Acquire exact protected public code' else 'success'),('Verify execution and immutable code','failure' if failure=='Verify execution and immutable code' else 'skipped'),('Pinned isolated Pillow runtime','skipped'),('Prepare PRIVATE candidate','skipped'),('Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02','skipped'),('Complete job','success')]
+  steps=prepare.get('steps',[]);need([(s.get('name'),s.get('conclusion')) for s in steps]==expected and all(s.get('status')=='completed' for s in steps),'PRIOR_FAILURE_STEPS')
+  artifacts=api(repo,'/actions/runs/'+str(prior['run'])+'/artifacts?per_page=100',token)
+  need(artifacts.get('total_count')==0 and artifacts.get('artifacts')==[],'PRIOR_FAILURE_ARTIFACTS')
+ row=next(r for r in rows if str(r['id'])==run_id)
+ need(all(row.get(k)==current.get(k) for k in ('id','workflow_id','run_attempt','status','conclusion','event','head_branch','head_sha','path','created_at')) and row.get('actor',{}).get('id')==current.get('actor',{}).get('id'),'PRIVATE_HISTORY_CONTRADICTION')
 
 def libraries(deps):
  sys.path[:0]=[str(ROOT),str(ROOT/'runtime'),str(Path(deps).resolve())]
