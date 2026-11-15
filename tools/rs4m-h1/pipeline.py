@@ -31,6 +31,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
 def request(path,token=None,binary=False):
  need(path.startswith('/repos/malin-bg/') and '..' not in path,'API_SCOPE')
+ need(isinstance(token,str) and bool(token),'API_AUTH_REQUIRED')
  headers={'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'BGZONA-H1-bounded-proof'}
  if token:headers['Authorization']='Bearer '+token
  req=urllib.request.Request('https://api.github.com'+path,headers=headers,method='GET')
@@ -71,8 +72,8 @@ def stage_context(policy,stage):
   need(os.environ.get('GITHUB_REF_PROTECTED')=='true','PROTECTED_CONTEXT');code=os.environ['GITHUB_SHA']
  need(re.fullmatch('[a-f0-9]{40}',code) is not None,'CODE_COMMIT')
  # The payload is a selector; actual protected refs/settings establish its authority.
- need(ref(policy['lab_repo'],policy['control_ref'])==code and ref(policy['lab_repo'],'refs/heads/main')==code,'TRUSTED_CODE_REF_MOVED')
- rules=api(policy['lab_repo'],'/rulesets/'+str(policy['ruleset_id']))
+ need(ref(policy['lab_repo'],policy['control_ref'],os.environ['GH_TOKEN'])==code and ref(policy['lab_repo'],'refs/heads/main',os.environ['GH_TOKEN'])==code,'TRUSTED_CODE_REF_MOVED')
+ rules=api(policy['lab_repo'],'/rulesets/'+str(policy['ruleset_id']),os.environ['GH_TOKEN'])
  need(rules.get('enforcement')=='active' and rules.get('conditions')==policy['ruleset_conditions'] and rules.get('bypass_actors')==[] and sorted(x['type'] for x in rules.get('rules',[]))==['deletion','non_fast_forward','update'],'CONTROL_PROTECTION')
  checkout=subprocess.run(['git','--no-optional-locks','-C',str(ROOT.parents[1]),'rev-parse','HEAD'],capture_output=True)
  need(checkout.returncode==0 and checkout.stdout.decode().strip()==code,'EXECUTABLE_CODE_PIN')
@@ -87,11 +88,42 @@ def stage_context(policy,stage):
  history=api(repo,'/actions/workflows/'+wf+'/runs?per_page=100',os.environ['GH_TOKEN'])
  need(history.get('total_count')==len(history.get('workflow_runs',[])),'INCOMPLETE_WORKFLOW_HISTORY')
  relevant=[x for x in history['workflow_runs'] if private or x.get('display_title','').startswith('BGZONA H1 synthetic')]
- need(len(relevant)==1 and str(relevant[0]['id'])==os.environ['GITHUB_RUN_ID'],'REPLAY_OR_OTHER_H1_RUN')
+ if private:
+  private_history(policy,current,os.environ['GH_TOKEN'],history)
+  for key in ('source','state','data'):
+   target=policy['lab_repo'] if key=='data' else policy['private_repo']
+   need(ref(target,policy[key+'_ref'],os.environ['GH_TOKEN'])==policy['h1g_seed_tips'][key],'H1G_RUNTIME_REF_MOVED')
+ else:need(len(relevant)==1 and str(relevant[0]['id'])==os.environ['GITHUB_RUN_ID'],'REPLAY_OR_OTHER_H1_RUN')
  for status in ('in_progress','queued','waiting','requested','pending'):
   active=api(repo,'/actions/runs?status='+status+'&per_page=100',os.environ['GH_TOKEN']);rows=active.get('workflow_runs',[])
   need(active.get('total_count')==len(rows) and all(str(x['id'])==os.environ['GITHUB_RUN_ID'] for x in rows),'CONCURRENT_OR_UNKNOWN')
  return repo,code,event
+
+def private_history(policy,current,token,history=None):
+ # One explicitly authorized successor to the independently proven pre-candidate failure.
+ prior=policy['prior_private_failure'];repo=policy['private_repo'];run_id=str(current.get('id'))
+ need(run_id!=str(prior['run']) and current.get('workflow_id')==prior['workflow_id'] and current.get('run_attempt')==1,'PRIVATE_SUCCESSOR_IDENTITY')
+ if history is None:history=api(repo,'/actions/workflows/'+policy['private_workflow'].split('/')[-1]+'/runs?per_page=100',token)
+ rows=history.get('workflow_runs',[])
+ need(history.get('total_count')==len(rows)==2 and {str(r.get('id')) for r in rows}=={str(prior['run']),run_id},'REPLAY_OR_OTHER_H1_RUN')
+ old=api(repo,'/actions/runs/'+str(prior['run']),token)
+ need(old.get('id')==prior['run'] and old.get('workflow_id')==prior['workflow_id'] and old.get('run_attempt')==1 and old.get('status')=='completed' and old.get('conclusion')=='failure' and old.get('event')=='workflow_dispatch' and old.get('head_branch')=='main' and old.get('repository',{}).get('full_name')==repo and str(old.get('repository',{}).get('id'))==policy['private_id'] and str(old.get('actor',{}).get('id'))==policy['owner_actor'] and path_matches(old.get('path'),policy['private_workflow'],'main') and re.fullmatch('[a-f0-9]{40}',old.get('head_sha','')),'PRIOR_FAILURE_IDENTITY')
+ for r in rows:
+  target=old if r['id']==prior['run'] else current
+  need(all(r.get(k)==target.get(k) for k in ('id','workflow_id','run_attempt','status','conclusion','event','head_branch','head_sha','path','created_at')) and r.get('actor',{}).get('id')==target.get('actor',{}).get('id'),'PRIVATE_HISTORY_CONTRADICTION')
+ need(all(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',v or '') for v in (old.get('updated_at'),current.get('created_at'))) and old['updated_at']<current['created_at'],'PRIVATE_SUCCESSOR_ORDER')
+ need(digest(workflow_bytes(repo,policy['private_workflow'],old['head_sha'],token))==prior['workflow_sha256'],'PRIOR_WORKFLOW_PIN')
+ jobs=api(repo,'/actions/runs/'+str(prior['run'])+'/attempts/1/jobs?per_page=100',token);js=jobs.get('jobs',[])
+ need(jobs.get('total_count')==len(js)==2 and {j.get('id') for j in js}=={prior['prepare_job'],prior['writer_job']},'PRIOR_FAILURE_JOBS')
+ for j in js:
+  need(j.get('run_id')==prior['run'] and j.get('run_attempt')==1 and j.get('head_sha')==old['head_sha'] and j.get('status')=='completed','PRIOR_JOB_IDENTITY')
+ prepare=next(j for j in js if j['id']==prior['prepare_job']);writer=next(j for j in js if j['id']==prior['writer_job'])
+ need(prepare.get('name')=='H1 PRIVATE prepare' and prepare.get('conclusion')=='failure' and writer.get('name')=='H1 PRIVATE writer' and writer.get('conclusion')=='skipped' and writer.get('steps')==[],'PRIOR_FAILURE_BOUNDARY')
+ steps=prepare.get('steps',[])
+ expected=[('Set up job','success'),('Acquire exact protected public code','failure'),('Verify execution and immutable code','skipped'),('Pinned isolated Pillow runtime','skipped'),('Prepare PRIVATE candidate','skipped'),('Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02','skipped'),('Complete job','success')]
+ need([(s.get('name'),s.get('conclusion')) for s in steps]==expected and all(s.get('status')=='completed' for s in steps),'PRIOR_FAILURE_STEPS')
+ artifacts=api(repo,'/actions/runs/'+str(prior['run'])+'/artifacts?per_page=100',token)
+ need(artifacts.get('total_count')==0 and artifacts.get('artifacts')==[],'PRIOR_FAILURE_ARTIFACTS')
 
 def libraries(deps):
  sys.path[:0]=[str(ROOT),str(ROOT/'runtime'),str(Path(deps).resolve())]
@@ -186,6 +218,7 @@ def private_receipt(policy,run_id,code,token):
  need(str(run.get('id'))==run_id and run.get('event')=='workflow_dispatch' and run.get('repository',{}).get('full_name')==repo and str(run.get('repository',{}).get('id'))==policy['private_id'] and run.get('head_branch')=='main' and run.get('run_attempt')==1 and str(run.get('actor',{}).get('id'))==policy['owner_actor'] and run.get('status')=='completed' and run.get('conclusion')=='success' and path_matches(run.get('path'),policy['private_workflow'],'main'),'PRIVATE_PRODUCER_RUN')
  wf=api(repo,'/actions/workflows/'+policy['private_workflow'].split('/')[-1],token);need(run['workflow_id']==wf['id'],'PRIVATE_WORKFLOW_ID')
  need(digest(workflow_bytes(repo,policy['private_workflow'],run['head_sha'],token))==policy['private_workflow_sha256'],'PRIVATE_PRODUCER_CODE')
+ private_history(policy,run,token)
  jobs=api(repo,'/actions/runs/'+run_id+'/attempts/1/jobs?per_page=100',token);rows=jobs.get('jobs',[])
  need(jobs.get('total_count')==2 and len(rows)==2 and {x['name'] for x in rows}=={'H1 PRIVATE prepare','H1 PRIVATE writer'} and all(x.get('conclusion')=='success' and x.get('status')=='completed' for x in rows),'PRIVATE_PRODUCER_JOBS')
  for label,step in [('H1 PRIVATE prepare','Prepare PRIVATE candidate'),('H1 PRIVATE writer','Commit PRIVATE checkpoint')]:
