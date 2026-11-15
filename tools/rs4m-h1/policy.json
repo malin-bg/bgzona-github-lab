@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "private_repo": "malin-bg/bgzona-private-intake",
+  "lab_repo": "malin-bg/bgzona-github-lab",
+  "private_id": "1429436685",
+  "lab_id": "1426765395",
+  "owner_actor": "252877943",
+  "control_ref": "refs/heads/automation-control",
+  "source_ref": "refs/heads/synthetic-source",
+  "state_ref": "refs/heads/rs4m-synthetic-state",
+  "data_ref": "refs/heads/rs4m-synthetic-data",
+  "source_root": "fc7b0312fbb52d0287aa20e0419795c852650735",
+  "state_root": "598ad1022c0d0646dd491575ccac682c39ae2f5d",
+  "data_root": "564c405279c89e990c9345ccf7c54e2bf38c4470",
+  "private_workflow": ".github/workflows/rs4m-h1-private.yml",
+  "shared_workflow": ".github/workflows/shared-media.yml",
+  "ruleset_id": 26657290,
+  "ruleset_conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/automation-control"
+      ]
+    }
+  },
+  "private_workflow_sha256": "963c29217d564c7f244da2b90c2001e0a2f4ea01397a74308ade0f0cbd121d2a"
+}

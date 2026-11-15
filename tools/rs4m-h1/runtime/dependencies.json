@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "minimum_python": [
+    3,
+    12
+  ],
+  "pillow_version": "13.0.0",
+  "worker": {
+    "importer.py": {
+      "path": "workers/importer.py",
+      "sha256": "a18fd1ff008a0b8d02ab20f067ca8ed4095f91b71cd9809d72ccbb0e43ee20f7"
+    },
+    "privacy_gate.py": {
+      "path": "workers/privacy_gate.py",
+      "sha256": "c9531816b2e51aa29bc71493153d3b74fdbea3fdf2f602301393684a0d466c2d"
+    },
+    "history_guard.py": {
+      "path": "workers/history_guard.py",
+      "sha256": "9281c3af8196bf8d23e59fdd749febafc7e11e9b4e19b71af2fb9fbbdeaa3879"
+    }
+  }
+}
