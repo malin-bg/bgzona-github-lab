@@ -266,8 +266,12 @@ def consumer(policy,event,work,deps):
  q=subprocess.run([sys.executable,'-I','-B',str(ROOT/'consumer_check.py'),str(work),commit,str(Path(deps).resolve())],capture_output=True,env=env);need(q.returncode==0,'TRUSTED_DEV_CONSUMER_STOP')
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('stage',choices=['private-prepare','private-write','public-prepare','public-write','consumer']);p.add_argument('--deps',required=True);p.add_argument('--guard-only',action='store_true');args=p.parse_args()
- policy=verified_code();repo,code,event=stage_context(policy,args.stage)
+ p=argparse.ArgumentParser();p.add_argument('stage',choices=['private-prepare','private-write','public-prepare','public-write','consumer']);p.add_argument('--deps',required=True);p.add_argument('--guard-only',action='store_true');p.add_argument('--owner-flow',action='store_true');args=p.parse_args()
+ policy=verified_code()
+ if args.owner_flow:
+  import owner_flow
+  return owner_flow.main(policy,args)
+ repo,code,event=stage_context(policy,args.stage)
  if args.guard_only:return print('H1_CONTEXT_VERIFIED')
  work=Path(os.environ['RUNNER_TEMP'])/'h1-work'
  if args.stage.endswith('prepare'):prepare(policy,args.stage.split('-')[0],code,event,work,args.deps)

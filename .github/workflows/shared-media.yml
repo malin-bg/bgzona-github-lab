@@ -1,6 +1,6 @@
 {
   "name": "R18H controlled independent D3 and DEV",
-  "run-name": "${{ inputs.mode == 'h1-synthetic' && format('BGZONA H1 synthetic {0}', inputs.private_run) || ((inputs.mode == 'consumer-dev' || inputs.mode == 'consumer-prod') && format('BGZONA {0} {1}', inputs.mode, inputs.record_sha256) || (inputs.mode == 'prod-complete' && format('BGZONA prod {0}:complete', inputs.record_sha256) || (inputs.mode == 'prod' && format('BGZONA prod {0}', inputs.record_sha256) || (inputs.mode == 'f1-resume' && format('BGZONA f1-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256)))))))) }}",
+  "run-name": "${{ inputs.mode == 'b-owner' && format('BGZONA B producer {0}', inputs.private_run) || (inputs.mode == 'h1-synthetic' && format('BGZONA H1 synthetic {0}', inputs.private_run) || ((inputs.mode == 'consumer-dev' || inputs.mode == 'consumer-prod') && format('BGZONA {0} {1}', inputs.mode, inputs.record_sha256) || (inputs.mode == 'prod-complete' && format('BGZONA prod {0}:complete', inputs.record_sha256) || (inputs.mode == 'prod' && format('BGZONA prod {0}', inputs.record_sha256) || (inputs.mode == 'f1-resume' && format('BGZONA f1-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256))))))))) }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -25,7 +25,8 @@
             "consumer-dev",
             "consumer-prod",
             "app-source-read",
-            "h1-synthetic"
+            "h1-synthetic",
+            "b-owner"
           ],
           "required": true
         },
@@ -846,7 +847,7 @@
     },
     "h1-export": {
       "name": "h1-export",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'h1-synthetic' && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -868,9 +869,10 @@
           "shell": "bash",
           "env": {
             "GH_TOKEN": "${{ github.token }}",
-            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}"
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
         },
         {
           "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
@@ -896,9 +898,10 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
-            "PRIVATE_READ_TOKEN": "${{ steps.app.outputs.token }}"
+            "PRIVATE_READ_TOKEN": "${{ steps.app.outputs.token }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\"\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -915,12 +918,13 @@
       "environment": "r18h-control",
       "outputs": {
         "bundle_sha": "${{ steps.prepare.outputs.bundle_sha }}",
-        "proposal_sha": "${{ steps.prepare.outputs.proposal_sha }}"
+        "proposal_sha": "${{ steps.prepare.outputs.proposal_sha }}",
+        "handoff_mode": "${{ steps.prepare.outputs.handoff_mode }}"
       }
     },
     "h1-write": {
       "name": "h1-write",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'h1-synthetic' && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -942,9 +946,10 @@
           "shell": "bash",
           "env": {
             "GH_TOKEN": "${{ github.token }}",
-            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}"
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
         },
         {
           "name": "Pinned isolated Pillow runtime",
@@ -959,9 +964,11 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "H1_BUNDLE_SHA": "${{ needs.h1-export.outputs.bundle_sha }}",
-            "H1_PROPOSAL_SHA": "${{ needs.h1-export.outputs.proposal_sha }}"
+            "H1_PROPOSAL_SHA": "${{ needs.h1-export.outputs.proposal_sha }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "H1_HANDOFF_MODE": "${{ needs.h1-export.outputs.handoff_mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\"\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -985,7 +992,7 @@
     },
     "h1-consumer": {
       "name": "h1-consumer",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'h1-synthetic' && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -1007,9 +1014,29 @@
           "shell": "bash",
           "env": {
             "GH_TOKEN": "${{ github.token }}",
-            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}"
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
+        },
+        {
+          "name": "Read-only exact H2R DEV site code",
+          "if": "inputs.mode == 'b-owner'",
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "repository": "malin-bg/bgzona-win-dev",
+            "ref": "50b6f4289aa69b16d27fed31f7bc616bcfc87803",
+            "path": "dev-site",
+            "submodules": "recursive",
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Verified Hugo extended 0.155.2",
+          "shell": "bash",
+          "run": "set -euo pipefail\nmkdir \"$RUNNER_TEMP/bgz-hugo\"\ncurl --fail --location --silent --show-error --output \"$RUNNER_TEMP/hugo.tar.gz\" https://github.com/gohugoio/hugo/releases/download/v0.155.2/hugo_extended_0.155.2_linux-amd64.tar.gz\nprintf '%s  %s\\n' '2bf76c75610e75fa5d15fd3dd0e1377c16ce4fa7202713283c744a19323ff419' \"$RUNNER_TEMP/hugo.tar.gz\" | sha256sum --check --strict\ntar -xzf \"$RUNNER_TEMP/hugo.tar.gz\" -C \"$RUNNER_TEMP/bgz-hugo\" hugo\n\"$RUNNER_TEMP/bgz-hugo/hugo\" version",
+          "if": "inputs.mode == 'b-owner'"
         },
         {
           "name": "Pinned isolated Pillow runtime",
@@ -1023,9 +1050,10 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
-            "H1_DATA_COMMIT": "${{ needs.h1-write.outputs.data_commit }}"
+            "H1_DATA_COMMIT": "${{ needs.h1-write.outputs.data_commit }}",
+            "B_OWNER_MODE": "${{ inputs.mode }}"
           },
-          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\"\n"
+          "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -1036,6 +1064,17 @@
             "retention-days": 1,
             "overwrite": false,
             "include-hidden-files": false
+          }
+        },
+        {
+          "name": "Preserve native DEV build-only evidence",
+          "if": "inputs.mode == 'b-owner'",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "b-native-dev-build-only",
+            "path": "${{ runner.temp }}/h1-work/dev-build/receipt.json\n${{ runner.temp }}/h1-work/dev-build/acceptance.json\n${{ runner.temp }}/h1-work/dev-build/site-seal.json\n${{ runner.temp }}/h1-work/dev-build/site-tree.sha256",
+            "if-no-files-found": "error",
+            "retention-days": 1
           }
         }
       ],
