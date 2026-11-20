@@ -1025,7 +1025,7 @@
           "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
           "with": {
             "repository": "malin-bg/bgzona-win-dev",
-            "ref": "50b6f4289aa69b16d27fed31f7bc616bcfc87803",
+            "ref": "12336f4e68100a0934913c5a97c8fd41b015f20f",
             "path": "dev-site",
             "submodules": "recursive",
             "persist-credentials": false,

@@ -186,7 +186,7 @@ def relay(policy,env,event):
  P.need(env.get('GITHUB_ACTIONS')=='true' and env.get('GITHUB_JOB')=='b-relay' and env.get('GITHUB_REPOSITORY_ID')=='1429436685' and env.get('GITHUB_WORKFLOW_REF')==PRIVATE+'/'+c['relay_workflow']+'@refs/heads/main' and env.get('GITHUB_REPOSITORY')==PRIVATE and env.get('GITHUB_REF')=='refs/heads/main' and env.get('GITHUB_ACTOR_ID')==str(OWNER) and env.get('GITHUB_RUN_ATTEMPT')=='1' and env.get('GITHUB_EVENT_NAME')=='workflow_run','RELAY_CONTEXT')
  P.need(event.get('action')=='completed' and event.get('repository',{}).get('id')==1429436685 and event.get('repository',{}).get('full_name')==PRIVATE and event.get('repository',{}).get('private') is True,'RELAY_EVENT_REPOSITORY')
  up=event.get('workflow_run',{});P.need(up.get('workflow_id')==c['private_workflow_id'] and up.get('event')=='workflow_run' and up.get('conclusion')=='success' and up.get('head_branch')=='main','RELAY_PRODUCER_TRIGGER')
- P.need(type(up.get('id')) is int and up['id']>0 and up.get('name')=='BGZONA H1 synthetic PRIVATE checkpoint' and up.get('status')=='completed' and up.get('run_attempt')==1 and up.get('actor',{}).get('id')==OWNER and up.get('actor',{}).get('type')=='User' and up.get('triggering_actor',up['actor']).get('id')==OWNER,'RELAY_PRODUCER_ATTEMPT_ACTOR')
+ P.need(type(up.get('id')) is int and up['id']>0 and re.fullmatch(r'BGZONA B source [1-9][0-9]*',up.get('name','')) is not None and P.path_matches(up.get('path'),policy['private_workflow'],'main') and up.get('status')=='completed' and up.get('run_attempt')==1 and up.get('actor',{}).get('id')==OWNER and up.get('actor',{}).get('type')=='User' and up.get('triggering_actor',up['actor']).get('id')==OWNER,'RELAY_PRODUCER_ATTEMPT_ACTOR')
  for key in ('repository','head_repository'):
   P.need(up.get(key,{}).get('id')==1429436685 and up.get(key,{}).get('full_name')==PRIVATE,'RELAY_PRODUCER_REPOSITORY')
  code=P.ref(LAB,policy['control_ref'],env['GH_TOKEN'])
@@ -199,6 +199,7 @@ def relay(policy,env,event):
  P.control_protection(policy,env['GH_TOKEN'],current['created_at'])
  r=private_receipt(policy,str(up['id']),code,env['GH_TOKEN'])
  P.need(r['workflow_sha']==up.get('head_sha'),'RELAY_PRODUCER_SOURCE_PIN')
+ P.need(up.get('name')=='BGZONA B source '+r['source']['run'],'RELAY_PRODUCER_NAME_BINDING')
  rows=history(PRIVATE,'/actions/workflows/'+str(c['relay_workflow_id'])+'/runs','workflow_runs',env['GH_TOKEN']);same=[x for x in rows if x.get('display_title')=='BGZONA B relay '+str(up['id'])];P.need(len(same)==1 and str(same[0]['id'])==env['GITHUB_RUN_ID'],'DUPLICATE_RELAY')
  P.need(all(x.get('status')=='completed' or (str(x.get('id'))==env['GITHUB_RUN_ID'] and x.get('run_attempt')==1 and x.get('status')=='in_progress') for x in rows),'RELAY_CONCURRENT_OR_UNKNOWN')
  # Exactly one POST. No token in URL/arguments and no response-dependent second send.
@@ -240,5 +241,6 @@ if __name__=='__main__':
  try:
   policy=P.verified_code();relay(policy,os.environ,P.strict(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes()))
  except Exception as e:
-  category=str(e) if isinstance(e,P.Stop) and re.fullmatch('[A-Z][A-Z0-9_]+',str(e)) else 'UNKNOWN'
+  source_stop=getattr(sys.modules.get('source_contract'),'Stop',P.Stop)
+  category=str(e) if isinstance(e,(P.Stop,source_stop)) and re.fullmatch('[A-Z][A-Z0-9_]+',str(e)) else 'UNKNOWN'
   print('B_STOP_'+category);sys.exit(2)
