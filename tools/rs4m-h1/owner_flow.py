@@ -14,7 +14,49 @@ def config(policy):
  P.need(policy['control_protection_authority']=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'LAB_AUTHORITY_REVIEW_REQUIRED')
  return c
 
+def activities(repo,token):
+ # Activities uses opaque before/after cursors, not numeric page. Never send
+ # credentials to a Link-provided host/path or silently deduplicate history.
+ from urllib.parse import urlsplit,parse_qsl,urlencode
+ from urllib.request import parse_http_list
+ P.need(repo==PRIVATE,'ACTIVITY_REPOSITORY')
+ stem='/repos/'+repo+'/activity';path=stem+'?per_page=100'
+ values=[];ids=set();cursors=set()
+ while True:
+  try:rows,headers=P.request(path,token,with_headers=True)
+  except P.Stop:raise
+  except Exception:raise P.Stop('ACTIVITY_API_UNKNOWN') from None
+  P.need(isinstance(rows,list) and len(rows)<=100 and isinstance(headers,dict),'ACTIVITY_SHAPE')
+  for row in rows:
+   P.need(isinstance(row,dict) and type(row.get('id')) is int and row['id']>0,'ACTIVITY_ROW')
+   P.need(row['id'] not in ids,'DUPLICATE_HISTORY');ids.add(row['id'])
+  P.need(bool(rows) or not values,'ACTIVITY_EMPTY_PAGE')
+  values.extend(rows);link=headers.get('Link');links={}
+  if link is not None:
+   P.need(isinstance(link,str) and bool(link) and not any(ord(c)<32 for c in link),'ACTIVITY_LINK')
+   for part in parse_http_list(link):
+    match=re.fullmatch(r'<([^<>]+)>;\s*rel="(next|prev|first|last)"',part.strip())
+    P.need(match is not None and match[2] not in links,'ACTIVITY_LINK')
+    try:url=urlsplit(match[1])
+    except ValueError:raise P.Stop('ACTIVITY_LINK') from None
+    P.need(url.scheme=='https' and url.netloc=='api.github.com' and url.path in (stem,'/repositories/1429436685/activity') and not url.fragment,'ACTIVITY_LINK_SCOPE')
+    try:query=parse_qsl(url.query,keep_blank_values=True,strict_parsing=True)
+    except ValueError:raise P.Stop('ACTIVITY_LINK_QUERY') from None
+    q=dict(query);cursor=set(q)&{'before','after'}
+    P.need(len(q)==len(query) and len(cursor)==1 and set(q)==({'per_page'}|cursor) and q['per_page']=='100','ACTIVITY_LINK_QUERY')
+    kind=next(iter(cursor));value=q[kind]
+    P.need(bool(value) and not any(ord(c)<33 or ord(c)>126 for c in value),'ACTIVITY_CURSOR')
+    links[match[2]]=(kind,value)
+  if 'next' not in links:
+   P.need(len(rows)<100 or 'prev' in links,'INCOMPLETE_ACTIVITY_HISTORY')
+   return values
+  P.need(bool(rows),'ACTIVITY_EMPTY_NEXT')
+  cursor=links['next'];P.need(cursor not in cursors,'ACTIVITY_CURSOR_REPEATED');cursors.add(cursor)
+  path=stem+'?'+urlencode([('per_page','100'),cursor])
+
+
 def history(repo,path,key,token):
+ if path=='/activity' and key is None:return activities(repo,token)
  values=[];page=1;total=None
  while True:
   response=P.api(repo,path+('&' if '?' in path else '?')+'per_page=100&page='+str(page),token)

@@ -30,14 +30,15 @@ def verified_code():
  need(actual==seen,'CODE_FILE_SET');return strict((ROOT/'policy.json').read_bytes())
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
-def request(path,token=None,binary=False):
+def request(path,token=None,binary=False,with_headers=False):
+ need(not (binary and with_headers),'API_RESPONSE_MODE')
  need(path.startswith('/repos/malin-bg/') and '..' not in path,'API_SCOPE')
  need(isinstance(token,str) and bool(token),'API_AUTH_REQUIRED')
  headers={'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'BGZONA-H1-bounded-proof'}
  if token:headers['Authorization']='Bearer '+token
  req=urllib.request.Request('https://api.github.com'+path,headers=headers,method='GET')
  try:
-  with urllib.request.build_opener(NoRedirect).open(req,timeout=30) as r:raw=r.read()
+  with urllib.request.build_opener(NoRedirect).open(req,timeout=30) as r:raw=r.read();status=r.status;link=r.headers.get('Link')
  except urllib.error.HTTPError as e:
   # Never forward authorization to signed artifact storage; never expose its URL.
   if binary and e.code==302:
@@ -47,6 +48,9 @@ def request(path,token=None,binary=False):
    with urllib.request.build_opener(NoRedirect).open(urllib.request.Request(location,method='GET'),timeout=30) as r:raw=r.read()
   else:raise Stop('API_HTTP_'+str(e.code)) from None
  except Exception:raise Stop('API_UNKNOWN') from None
+ if with_headers:
+  need(status==200,'API_HTTP_'+str(status))
+  return strict(raw),{'Link':link}
  return raw if binary else strict(raw)
 def api(repo,path,token=None):return request('/repos/'+repo+path,token)
 def ref(repo,name,token=None):
