@@ -273,6 +273,9 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('stage',choices=['private-prepare','private-write','public-prepare','public-write','consumer']);p.add_argument('--deps',required=True);p.add_argument('--guard-only',action='store_true');p.add_argument('--owner-flow',action='store_true');args=p.parse_args()
  policy=verified_code()
  if args.owner_flow:
+  # Only verified sibling modules; -I omits the script directory.
+  sys.path.insert(0,str(ROOT))
+  if __name__=='__main__':sys.modules['pipeline']=sys.modules[__name__]
   import owner_flow
   return owner_flow.main(policy,args)
  repo,code,event=stage_context(policy,args.stage)
@@ -285,5 +288,6 @@ def main():
 if __name__=='__main__':
  try:main()
  except Exception as e:
-  category=str(e) if isinstance(e,Stop) and re.fullmatch('[A-Z][A-Z0-9_]+',str(e)) else 'UNKNOWN'
+  source_stop=getattr(sys.modules.get('source_contract'),'Stop',Stop)
+  category=str(e) if isinstance(e,(Stop,source_stop)) and re.fullmatch('[A-Z][A-Z0-9_]+',str(e)) else 'UNKNOWN'
   print('H1_STOP_'+category);sys.exit(2)
