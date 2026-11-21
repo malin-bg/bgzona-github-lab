@@ -103,22 +103,43 @@ def stage_context(policy,stage):
   need(active.get('total_count')==len(rows) and all(str(x['id'])==os.environ['GITHUB_RUN_ID'] for x in rows),'CONCURRENT_OR_UNKNOWN')
  return repo,code,event
 
-def control_protection(policy,token,run_created_at):
+def control_time(value):
+ need(isinstance(value,str),'CONTROL_TIMESTAMP')
+ try:parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+ except ValueError:raise Stop('CONTROL_TIMESTAMP') from None
+ need(parsed.tzinfo is not None,'CONTROL_TIMESTAMP');return parsed
+
+
+def owner_control_preflight(policy,code,run_created_at):
+ # This variable is supplied only from GitHub Actions settings, never from inputs.
+ try:record=strict(os.environ.get('BGZONA_CONTROL_PREFLIGHT','').encode())
+ except (ValueError,UnicodeError):raise Stop('CONTROL_OWNER_PREFLIGHT_REQUIRED') from None
+ need(isinstance(record,dict) and set(record)=={'repository','ref','ruleset_id','node_id',
+      'updated_at','bypass_actors','code_commit'} and record['repository']==policy['lab_repo']
+      and record['ref']==policy['control_ref'] and record['ruleset_id']==policy['ruleset_id']
+      and type(record['ruleset_id']) is int and isinstance(record['node_id'],str)
+      and record['node_id'] and record['bypass_actors']==[]
+      and re.fullmatch('[0-9a-f]{40}',code) and record['code_commit']==code,
+      'CONTROL_OWNER_PREFLIGHT_SCOPE')
+ need(control_time(record['updated_at'])<run_created_at,'CONTROL_OWNER_PREFLIGHT_STALE')
+ return record
+
+
+def control_protection(policy,token,run_created_at,*,real_code=None):
  # Missing bypass metadata is not an empty list. The separately authorized OWNER
  # preflight proves that hidden setting; this read-only job proves live rules.
  authority=policy.get('control_protection_authority')
  need(authority=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'CONTROL_AUTHORITY')
- def instant(value):
-  need(isinstance(value,str),'CONTROL_TIMESTAMP')
-  try:parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-  except ValueError:raise Stop('CONTROL_TIMESTAMP') from None
-  need(parsed.tzinfo is not None,'CONTROL_TIMESTAMP');return parsed
- created=instant(run_created_at);expected_types=['deletion','non_fast_forward','update']
+ created=control_time(run_created_at);expected_types=['deletion','non_fast_forward','update']
+ proof=owner_control_preflight(policy,real_code,created) if real_code is not None else None
  def view(row):
   need(isinstance(row,dict) and row.get('id')==policy['ruleset_id'] and row.get('target')=='branch' and row.get('source_type')=='Repository' and row.get('source')==policy['lab_repo'] and row.get('enforcement')=='active' and row.get('conditions')==policy['ruleset_conditions'],'CONTROL_PROTECTION')
   rules=row.get('rules');need(isinstance(rules,list) and len(rules)==3 and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
   if 'bypass_actors' in row:need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
-  updated=instant(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
+  updated=control_time(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
+  if proof is not None:
+   need(row.get('node_id')==proof['node_id'] and updated==control_time(proof['updated_at']),
+        'CONTROL_CHANGED_SINCE_OWNER_PREFLIGHT')
   return (updated,'LIVE_EMPTY' if 'bypass_actors' in row else 'OWNER_PREFLIGHT_ONLY')
  path='/rulesets/'+str(policy['ruleset_id']);before=view(api(policy['lab_repo'],path,token))
  branch=policy['control_ref'].removeprefix('refs/heads/');need(branch=='automation-control','CONTROL_REF')
@@ -171,7 +192,9 @@ def acquire(repo,reference,root,local,work,deps,token=None):
  if token:
   ch=H.Channel(H.Endpoint(url,'source-read',reference,root),H.Identity('source-read',url,'x-access-token',token));return ch.acquire_source(local)
  # Public data only: ordinary anonymous Git with the same process/TLS isolation, no credential supplied.
- need(repo=='malin-bg/bgzona-github-lab' and reference=='refs/heads/rs4m-synthetic-data','ANONYMOUS_SCOPE')
+ need(repo=='malin-bg/bgzona-github-lab' and (reference,root) in (
+  ('refs/heads/rs4m-synthetic-data','564c405279c89e990c9345ccf7c54e2bf38c4470'),
+  ('refs/heads/publisher-data','05cfdeb41ca116dc07614906fbbdee9b3a597745')),'ANONYMOUS_SCOPE')
  def run(*args):
   q=subprocess.run([H.GIT,'--no-optional-locks','-C',str(local),'-c','credential.helper=','-c','http.extraHeader=','-c','http.sslVerify=true','-c','http.followRedirects=false','-c','http.proxy=','-c','http.maxRetries=0','-c','core.hooksPath='+str(ROOT/'no-hooks'),*args],env=H.clean_env(),capture_output=True)
   need(q.returncode==0,'PUBLIC_GIT_UNKNOWN');return q.stdout
@@ -267,10 +290,10 @@ def consumer(policy,event,work,deps):
  need(seen==commit,'PUBLIC_COMMIT_MOVED')
  env={k:v for k,v in os.environ.items() if k.upper() in ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC','PATHEXT')}
  env.update(PYTHONDONTWRITEBYTECODE='1',GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull,GIT_CONFIG_SYSTEM=os.devnull,GIT_ALLOW_PROTOCOL='file')
- q=subprocess.run([sys.executable,'-I','-B',str(ROOT/'consumer_check.py'),str(work),commit,str(Path(deps).resolve())],capture_output=True,env=env);need(q.returncode==0,'TRUSTED_DEV_CONSUMER_STOP')
+ q=subprocess.run([sys.executable,'-I','-B',str(ROOT/'consumer_check.py'),str(work),commit,str(Path(deps).resolve()),policy['data_ref']],capture_output=True,env=env);need(q.returncode==0,'TRUSTED_DEV_CONSUMER_STOP')
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('stage',choices=['private-prepare','private-write','public-prepare','public-write','consumer']);p.add_argument('--deps',required=True);p.add_argument('--guard-only',action='store_true');p.add_argument('--owner-flow',action='store_true');args=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('stage',choices=['private-prepare','private-write','public-prepare','public-write','consumer','dev-dispatch']);p.add_argument('--deps',required=True);p.add_argument('--guard-only',action='store_true');p.add_argument('--owner-flow',action='store_true');args=p.parse_args()
  policy=verified_code()
  if args.owner_flow:
   # Only verified sibling modules; -I omits the script directory.

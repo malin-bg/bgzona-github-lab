@@ -2,6 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json,os,sys,time
+from uuid import UUID, uuid4
 ROOT=Path(__file__).resolve().parent
 sys.path[:0]=[str(ROOT/'runtime'),str(ROOT.parent/'r6c-d2-local/runtime/site-packages')]
 import git_publisher as G
@@ -85,14 +86,60 @@ def writer_for(public,work):
   G.run(writer,'fetch','--no-tags',str(public),PUBLIC_REF);P.need(G.run(writer,'rev-parse','FETCH_HEAD').stdout.decode().strip()==seen,'PUBLIC_MOVED')
  return writer,seen
 
+
+def bind_new_trace(private_recovery, private_run_id):
+    """Call only for a new PRIVATE checkpoint, after the producer run is verified."""
+    if type(private_run_id) is not int or private_run_id <= 0:
+        raise ValueError('PRIVATE_TRACE_BINDING')
+    return private_recovery | {
+        'schema': 2,
+        'trace': uuid4().hex,
+        'private_run_id': private_run_id,
+    }
+
+def resolve_private_trace(trace, private_recovery, trusted_target):
+    """The caller reads this record from the independently verified PRIVATE ref."""
+    try:
+        value = UUID(hex=trace)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError('PRIVATE_TRACE_BINDING') from None
+    run_id = private_recovery.get('private_run_id')
+    if (
+        value.version != 4 or trace != value.hex
+        or private_recovery.get('trace') != trace
+        or private_recovery.get('target') != trusted_target
+        or type(run_id) is not int or run_id <= 0
+    ):
+        raise ValueError('PRIVATE_TRACE_BINDING')
+    return run_id
+
+
+
 def descriptor(folder):
  f=folder/'recovery.json'
  if not f.exists():return None
- r=A.strict(f.read_bytes());P.need(set(r)=={'schema','expected','target','stamp','snapshot'} and r['schema']==1 and type(r['stamp']) is int,'RECOVERY_SCHEMA')
+ r=A.strict(f.read_bytes());keys={'schema','expected','target','stamp','snapshot'}
+ P.need(type(r.get('schema')) is int and type(r.get('stamp')) is int,'RECOVERY_SCHEMA')
+ if r['schema']==2:
+  P.need(set(r)==keys|{'trace','private_run_id'},'RECOVERY_SCHEMA')
+  resolve_private_trace(r['trace'],r,r['target'])
+ else:
+  P.need(r['schema']==1 and set(r)==keys,'RECOVERY_SCHEMA')
  for name in ['expected','target']:G.oid(r[name])
  return r
 
-def prepare(private,public,work,stop_before_private=False,checkpoint=True):
+def require_legacy_release(folder, private_state, public_state):
+ pending=private_state['pending_accepted']
+ manifest=P.json.loads((folder/'snapshots'/pending['snapshot']/'manifest.json').read_bytes())
+ expected=P.digest(P.data({'schema':1,'files':manifest['files']}))
+ marker={'already_accepted':True,'snapshot':expected}
+ P.need(pending['legacy_D3']==13 and pending['already_accepted'] is True and
+        public_state['pending_accepted']==marker and
+        (private_state['snapshot']!=pending['snapshot'] or public_state['snapshot']==expected),
+        'LEGACY_PENDING13_UNRESOLVED')
+
+
+def prepare(private,public,work,stop_before_private=False,checkpoint=True,producer_id=None):
  """One PRIVATE ref update, only after a reproducible sanitized candidate exists."""
  preparation_context();old=head(private,G.REF)
  with TemporaryDirectory(dir=work,prefix='prepare-') as t:
@@ -100,12 +147,24 @@ def prepare(private,public,work,stop_before_private=False,checkpoint=True):
   if rec:
    seen=head(public,PUBLIC_REF)
    P.need(seen==rec['target'],'PENDING_OR_CONFLICT_NO_NEW_INTAKE')
-  source=head(private,OWNER_REF);result=P.publish(private,folder,target=source)
+  source=head(private,OWNER_REF)
+  real=OWNER_REF=='refs/heads/cp2b-private-standard-source-r1'
+  if real:
+   P.need(type(producer_id) is int and producer_id>0,'REAL_PRODUCER_REQUIRED')
+   if source!=before['source_cursor']:
+    P.need(rec is not None,'REAL_CHECKPOINT_REQUIRED')
+    public_state=A.strict(G.run(public,'show',seen+':state.json').stdout)
+    require_legacy_release(folder,before,public_state)
+  else:
+   P.need(producer_id is None,'SYNTHETIC_TRACE')
+  result=P.publish(private,folder,target=source)
   if rec and not result['commits']:return {'status':'NO_CHANGE','private':old,'public':rec['target'],'pushes':0,'private_writes':0}
   payload,view=public_tree(folder)
   with TemporaryDirectory(dir=work,prefix='candidate-') as scratch:
    writer,seen=writer_for(public,Path(scratch));stamp=int(time.time());target=commit_tree(writer,payload,seen,stamp)
-  rec={'schema':1,'expected':seen,'target':target,'stamp':stamp,'snapshot':view['snapshot']};(folder/'recovery.json').write_bytes(P.data(rec))
+  rec={'schema':1,'expected':seen,'target':target,'stamp':stamp,'snapshot':view['snapshot']}
+  if real:rec=bind_new_trace(rec,producer_id)
+  (folder/'recovery.json').write_bytes(P.data(rec))
   if stop_before_private:return {'status':'STOP_BEFORE_PRIVATE','private':old,'public':seen,'private_writes':0,'pushes':0}
   P.need(head(private,OWNER_REF)==source,'SOURCE_MOVED_BEFORE_CHECKPOINT');proposal=G.version(private,folder,old)
   if not checkpoint:return {'status':'PRIVATE_PREPARED','proposal':proposal,'target':target,'snapshot':view['snapshot'],'private_writes':0,'pushes':0}

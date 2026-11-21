@@ -23,7 +23,7 @@
       ]
     }
   },
-  "private_workflow_sha256": "a28888aa147397de09f66d8de7af04fa69a532754a90fa7ce9dd1ca17a279f33",
+  "private_workflow_sha256": "e886e9e8d7eb2f83a7407ac20258a4186487c0cf5ecdf471d25e6fb60541d06a",
   "h1g_seed_tips": {
     "source": "03c878933710725a4a1ca68ee2671d3ad1e126f7",
     "state": "c87ab407c5fec83f29c9edd259fda7b50d5c7571",
@@ -64,6 +64,20 @@
     "Lab_mode": "b-owner",
     "DEV_code_commit": "12336f4e68100a0934913c5a97c8fd41b015f20f",
     "test_scope": "SYNTHETIC_ONLY; explicit owner test-filter/pin approval required",
-    "relay_workflow_sha256": "66352251da3ef517813d90e8e5d70150d31a3823de4e5214485966a78a305e6c"
+    "relay_workflow_sha256": "f1d6166dcb75dff6fcbd420aa5bfc93364b3aa63d819cad8b62627b667684fdd"
+  },
+  "real_owner_flow": {
+    "enabled": false,
+    "source_ref": "refs/heads/cp2b-private-standard-source-r1",
+    "source_workflow": ".github/workflows/cp2b-push-proof.yml",
+    "source_workflow_id": 407190822,
+    "source_workflow_sha256": "fd6ee230c3c74c74d2f864575b4291d905927424ad41d21205148527ae66dadd",
+    "private_workflow_id": 419182651,
+    "relay_workflow_id": 411050691,
+    "relay_workflow": ".github/workflows/c5-private-lab-relay.yml",
+    "Lab_mode": "b-owner",
+    "DEV_code_commit": "2f4f085c871e06f2d77741aee858d449ade9f334",
+    "test_scope": "REAL_ONLY; exact disabled setup",
+    "relay_workflow_sha256": "f1d6166dcb75dff6fcbd420aa5bfc93364b3aa63d819cad8b62627b667684fdd"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "R18H controlled independent D3 and DEV",
-  "run-name": "${{ inputs.mode == 'b-owner' && format('BGZONA B producer {0}', inputs.private_run) || (inputs.mode == 'h1-synthetic' && format('BGZONA H1 synthetic {0}', inputs.private_run) || ((inputs.mode == 'consumer-dev' || inputs.mode == 'consumer-prod') && format('BGZONA {0} {1}', inputs.mode, inputs.record_sha256) || (inputs.mode == 'prod-complete' && format('BGZONA prod {0}:complete', inputs.record_sha256) || (inputs.mode == 'prod' && format('BGZONA prod {0}', inputs.record_sha256) || (inputs.mode == 'f1-resume' && format('BGZONA f1-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256))))))))) }}",
+  "run-name": "${{ inputs.mode == 'b-owner' && (startsWith(inputs.private_run, 'trace:') && 'BGZONA B real' || format('BGZONA B producer {0}', inputs.private_run)) || (inputs.mode == 'h1-synthetic' && format('BGZONA H1 synthetic {0}', inputs.private_run) || ((inputs.mode == 'consumer-dev' || inputs.mode == 'consumer-prod') && format('BGZONA {0} {1}', inputs.mode, inputs.record_sha256) || (inputs.mode == 'prod-complete' && format('BGZONA prod {0}:complete', inputs.record_sha256) || (inputs.mode == 'prod' && format('BGZONA prod {0}', inputs.record_sha256) || (inputs.mode == 'f1-resume' && format('BGZONA f1-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto-resume' && format('BGZONA auto-resume {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'auto' && format('BGZONA auto {0}:{1}', inputs.source_run, inputs.relay_run) || (inputs.mode == 'c3' && 'R18H c3' || format('R18H {0} {1}', inputs.mode, (inputs.mode == 'prepare' || inputs.mode == 'resume-prepare') && inputs.source_run || inputs.record_sha256))))))))) }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -847,7 +847,7 @@
     },
     "h1-export": {
       "name": "h1-export",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == '' && (!startsWith(inputs.private_run, 'trace:') || vars.BGZONA_REAL_ENABLED == 'true')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -870,7 +870,9 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
-            "B_OWNER_MODE": "${{ inputs.mode }}"
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
         },
@@ -899,7 +901,9 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "PRIVATE_READ_TOKEN": "${{ steps.app.outputs.token }}",
-            "B_OWNER_MODE": "${{ inputs.mode }}"
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
@@ -924,7 +928,7 @@
     },
     "h1-write": {
       "name": "h1-write",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == '' && (!startsWith(inputs.private_run, 'trace:') || vars.BGZONA_REAL_ENABLED == 'true')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -947,7 +951,9 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
-            "B_OWNER_MODE": "${{ inputs.mode }}"
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
         },
@@ -966,7 +972,9 @@
             "H1_BUNDLE_SHA": "${{ needs.h1-export.outputs.bundle_sha }}",
             "H1_PROPOSAL_SHA": "${{ needs.h1-export.outputs.proposal_sha }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "H1_HANDOFF_MODE": "${{ needs.h1-export.outputs.handoff_mode }}"
+            "H1_HANDOFF_MODE": "${{ needs.h1-export.outputs.handoff_mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
@@ -987,12 +995,13 @@
         "h1-export"
       ],
       "outputs": {
-        "data_commit": "${{ steps.write.outputs.data_commit }}"
+        "data_commit": "${{ steps.write.outputs.data_commit }}",
+        "public_sends": "${{ steps.write.outputs.public_sends }}"
       }
     },
     "h1-consumer": {
       "name": "h1-consumer",
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == ''",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && (inputs.mode == 'h1-synthetic' || inputs.mode == 'b-owner') && inputs.private_run != '' && inputs.record_sha256 == '' && inputs.source_run == '' && inputs.relay_run == '' && (!startsWith(inputs.private_run, 'trace:') || vars.BGZONA_REAL_ENABLED == 'true')",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "permissions": {
@@ -1015,7 +1024,9 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
-            "B_OWNER_MODE": "${{ inputs.mode }}"
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
         },
@@ -1025,7 +1036,7 @@
           "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
           "with": {
             "repository": "malin-bg/bgzona-win-dev",
-            "ref": "12336f4e68100a0934913c5a97c8fd41b015f20f",
+            "ref": "${{ startsWith(inputs.private_run, 'trace:') && '2f4f085c871e06f2d77741aee858d449ade9f334' || '12336f4e68100a0934913c5a97c8fd41b015f20f' }}",
             "path": "dev-site",
             "submodules": "recursive",
             "persist-credentials": false,
@@ -1051,7 +1062,9 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "H1_DATA_COMMIT": "${{ needs.h1-write.outputs.data_commit }}",
-            "B_OWNER_MODE": "${{ inputs.mode }}"
+            "B_OWNER_MODE": "${{ inputs.mode }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
         },
@@ -1076,10 +1089,102 @@
             "if-no-files-found": "error",
             "retention-days": 1
           }
+        },
+        {
+          "if": "startsWith(inputs.private_run, 'trace:') && steps.consumer.outputs.dev_proof != '' && needs.h1-write.outputs.public_sends == '1'",
+          "name": "Bind public proof to the sealed output in this Lab run",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "${{ steps.consumer.outputs.dev_proof }}",
+            "path": "${{ runner.temp }}/h1-work/dev-build/receipt.json\n${{ runner.temp }}/h1-work/dev-build/site-seal.json",
+            "if-no-files-found": "error",
+            "retention-days": 1,
+            "overwrite": false
+          }
         }
       ],
       "needs": [
         "h1-write"
+      ],
+      "outputs": {
+        "dev_proof": "${{ steps.consumer.outputs.dev_proof }}"
+      }
+    },
+    "h1-dispatch-dev": {
+      "name": "h1-dispatch-dev",
+      "needs": [
+        "h1-write",
+        "h1-consumer"
+      ],
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'b-owner' && startsWith(inputs.private_run, 'trace:') && needs.h1-write.outputs.public_sends == '1' && needs.h1-consumer.outputs.dev_proof != '' && (!startsWith(inputs.private_run, 'trace:') || vars.BGZONA_REAL_ENABLED == 'true')",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 4,
+      "environment": "r18h-control",
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "ref": "${{ github.workflow_sha }}",
+            "persist-credentials": false,
+            "fetch-depth": 1,
+            "path": "code"
+          }
+        },
+        {
+          "name": "Verify protected REAL dispatch context before minting a DEV token",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
+            "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
+          },
+          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py dev-dispatch --deps \"$RUNNER_TEMP/h1-pillow\" --owner-flow --guard-only\n"
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "dev-app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-win-dev",
+            "permission-actions": "write"
+          }
+        },
+        {
+          "name": "Dispatch the exact trusted snapshot to DEV once",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
+            "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}",
+            "DEV_DISPATCH_TOKEN": "${{ steps.dev-app.outputs.token }}",
+            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
+            "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
+          },
+          "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py dev-dispatch --deps \"$RUNNER_TEMP/h1-pillow\" --owner-flow\n",
+          "id": "dev-send"
+        },
+        {
+          "name": "Bind the exact DEV run returned by GitHub",
+          "if": "steps.dev-send.outputs.dev_run != ''",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "dev-admitted-${{ steps.dev-send.outputs.dev_run }}",
+            "path": "${{ runner.temp }}/h1-real-dev-dispatch.json",
+            "if-no-files-found": "error",
+            "retention-days": 1,
+            "overwrite": false
+          }
+        }
       ]
     }
   }
