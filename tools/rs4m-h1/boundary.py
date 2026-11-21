@@ -51,9 +51,14 @@ def public_tree(folder):
 
 def validate_public(payload):
  s=A.strict(payload['state.json']);P.need(set(s)=={'schema','baseline_complete','snapshot','public_snapshot','pending_accepted'} and s['schema']==1 and s['baseline_complete'] is True,'PUBLIC_STATE')
- P.need(set(s['pending_accepted'])=={'already_accepted','snapshot'} and s['pending_accepted']['already_accepted'] is True,'PUBLIC_PENDING')
+ pending=s['pending_accepted'];snapshots={s['snapshot'],s['public_snapshot']}
+ if pending is None:
+  P.need(s['snapshot']==s['public_snapshot'],'PUBLIC_BASELINE_SELECTION')
+ else:
+  P.need(set(pending)=={'already_accepted','snapshot'} and pending['already_accepted'] is True,'PUBLIC_PENDING')
+  snapshots.add(pending['snapshot'])
  expected={'state.json'}
- for sid in {s['snapshot'],s['public_snapshot'],s['pending_accepted']['snapshot']}:
+ for sid in snapshots:
   prefix='snapshots/'+sid+'/';files={p[len(prefix):]:raw for p,raw in payload.items() if p.startswith(prefix)};m=A.strict(files['manifest.json'])
   P.need(set(m)=={'schema','files'} and P.digest(P.data(m))==sid,'PUBLIC_SID')
   # Existing strict media/ID/URL/revision/OG/path/hash validator, with PRIVATE source binding removed only in isolated PUBLIC variant.
