@@ -64,20 +64,20 @@
     "Lab_mode": "b-owner",
     "DEV_code_commit": "12336f4e68100a0934913c5a97c8fd41b015f20f",
     "test_scope": "SYNTHETIC_ONLY; explicit owner test-filter/pin approval required",
-    "relay_workflow_sha256": "f1d6166dcb75dff6fcbd420aa5bfc93364b3aa63d819cad8b62627b667684fdd"
+    "relay_workflow_sha256": "28dfcea1463e9c564de45cda93586f9930befe7b3e7e2fdc873d6233987c0239"
   },
   "real_owner_flow": {
     "enabled": false,
     "source_ref": "refs/heads/cp2b-private-standard-source-r1",
     "source_workflow": ".github/workflows/cp2b-push-proof.yml",
     "source_workflow_id": 407190822,
-    "source_workflow_sha256": "fd6ee230c3c74c74d2f864575b4291d905927424ad41d21205148527ae66dadd",
+    "source_workflow_sha256": "6489757d28f3c6d1e05a5c5949117f32472ad664c1c4d5e8469a3503cec8b53a",
     "private_workflow_id": 419182651,
     "relay_workflow_id": 411050691,
     "relay_workflow": ".github/workflows/c5-private-lab-relay.yml",
     "Lab_mode": "b-owner",
     "DEV_code_commit": "2f4f085c871e06f2d77741aee858d449ade9f334",
     "test_scope": "REAL_ONLY; exact disabled setup",
-    "relay_workflow_sha256": "f1d6166dcb75dff6fcbd420aa5bfc93364b3aa63d819cad8b62627b667684fdd"
+    "relay_workflow_sha256": "28dfcea1463e9c564de45cda93586f9930befe7b3e7e2fdc873d6233987c0239"
   }
 }
