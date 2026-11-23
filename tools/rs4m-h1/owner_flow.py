@@ -95,20 +95,35 @@ def activities(repo,token):
   path=stem+'?'+urlencode([('per_page','100'),cursor])
 
 
-def history(repo,path,key,token):
+def history(repo,path,key,token,*,label='HISTORY'):
  if path=='/activity' and key is None:return activities(repo,token)
+ from urllib.request import parse_http_list
+ stem='/repos/'+repo+path+('&' if '?' in path else '?')+'per_page=100&page='
  values=[];page=1;total=None
+ def check(ok,code):
+  if not ok:
+   count=reported if type(reported) is int else 'unknown'
+   print(f'H1_HISTORY_DIAG check={label} page={page} rows_read={len(values)} total_count={count} next={int(has_next)}',flush=True)
+   P.need(False,code)
  while True:
-  response=P.api(repo,path+('&' if '?' in path else '?')+'per_page=100&page='+str(page),token)
+  # Use only the relation from Link. The URL always stays on the original route.
+  response,headers=P.request(stem+str(page),token,with_headers=True)
   rows=response[key] if key else response;P.need(isinstance(rows,list),'HISTORY_SHAPE')
-  if key and 'total_count' in response:
-   if total is None:total=response['total_count']
-   P.need(response['total_count']==total,'HISTORY_CHANGED')
+  link=headers.get('Link')
+  links=[re.fullmatch(r'<[^<>]+>;\s*rel="(next|prev|first|last)"',part.strip())
+         for part in parse_http_list(link)] if link else []
+  P.need(all(links),'HISTORY_LINK')
+  has_next=any(match[1]=='next' for match in links)
+  reported=response.get('total_count',total) if key else None
   values.extend(rows)
-  if len(rows)<100:break
+  if key and 'total_count' in response:
+   if total is None:total=reported
+   check(reported==total,'HISTORY_CHANGED')
+  if not has_next:break
+  check(bool(rows) and type(total) is int and len(values)<=total,'INCOMPLETE_HISTORY')
   page+=1
- P.need(total is None or len(values)==total,'INCOMPLETE_HISTORY')
- if values and 'id' in values[0]:P.need(len({v['id'] for v in values})==len(values),'DUPLICATE_HISTORY')
+ check(total is None or len(values)==total,'INCOMPLETE_HISTORY')
+ if values and 'id' in values[0]:check(len({v['id'] for v in values})==len(values),'DUPLICATE_HISTORY')
  return values
 
 def source(policy,run_id,token):
@@ -118,7 +133,7 @@ def source(policy,run_id,token):
  import source_contract as S
  # Existing validator's configured branch, never a branch supplied by event/payload.
  S.STANDARD_REF=c['source_ref']
- artifacts=history(PRIVATE,'/actions/runs/'+str(run_id)+'/artifacts','artifacts',token)
+ artifacts=history(PRIVATE,'/actions/runs/'+str(run_id)+'/artifacts','artifacts',token,label='SOURCE_ARTIFACTS')
  a=S.select(artifacts,int(run_id),1,run['head_sha'],ref=c['source_ref'])
  raw=P.request('/repos/'+PRIVATE+'/actions/artifacts/'+str(a['id'])+'/zip',token,binary=True)
  P.need(len(raw)==a['size_in_bytes'],'SOURCE_ARCHIVE_SIZE');packet=S.decode(raw,a)
@@ -144,7 +159,8 @@ def context(policy,stage):
   P.need(env.get('GITHUB_EVENT_NAME')==current.get('event')=='workflow_dispatch' and env.get('GITHUB_REF_PROTECTED')=='true' and workflow_sha==code,'PROTECTED_LAB_CONTEXT')
   binding=public_binding(event.get('inputs',{}),c)
  P.control_protection(policy,token,current['created_at'],real_code=code if real(c) else None)
- rows=history(repo,'/actions/workflows/'+str(c['private_workflow_id'] if private else 408732936)+'/runs','workflow_runs',token)
+ rows=history(repo,'/actions/workflows/'+str(c['private_workflow_id'] if private else 408732936)+'/runs','workflow_runs',token,
+              label='PRIVATE_PRODUCER_RUNS' if private else 'LAB_WORKFLOW_RUNS')
  if private:expected=('BGZONA B real source ' if real(c) else 'BGZONA B source ')+binding['run']
  elif real(c):expected='BGZONA B real'
  else:expected='BGZONA B producer '+binding['private_run']
@@ -160,7 +176,7 @@ def context(policy,stage):
    return False
   return P.digest(P.workflow_bytes(PRIVATE,c['relay_workflow'],workflow_sha,token))==c['relay_workflow_sha256']
  for status in ('in_progress','queued','waiting','requested','pending'):
-  active=history(repo,'/actions/runs?status='+status,'workflow_runs',token)
+  active=history(repo,'/actions/runs?status='+status,'workflow_runs',token,label='ACTIVE_'+status.upper())
   P.need(all(same_or_legacy_route_check(row) for row in active),'CONCURRENT_OR_UNKNOWN')
  return repo,code,event,binding
 
@@ -253,7 +269,7 @@ def private_receipt(policy,run_id,code,token):
  c=config(policy);run=P.api(PRIVATE,'/actions/runs/'+run_id,token)
  P.need(run.get('repository',{}).get('id')==1429436685 and run.get('workflow_id')==c['private_workflow_id'] and run.get('event')=='workflow_run' and run.get('head_branch')=='main' and run.get('run_attempt')==1 and run.get('actor',{}).get('id')==OWNER and run.get('status')=='completed' and run.get('conclusion')=='success','PRODUCER_COMPLETION')
  P.need(P.digest(P.workflow_bytes(PRIVATE,policy['private_workflow'],run['head_sha'],token))==policy['private_workflow_sha256'],'PRODUCER_WORKFLOW_PIN')
- jobs=history(PRIVATE,'/actions/runs/'+run_id+'/attempts/1/jobs','jobs',token);P.need(len(jobs)==2 and {j['name'] for j in jobs}=={'H1 PRIVATE prepare','H1 PRIVATE writer'} and all(j.get('status')=='completed' and j.get('conclusion')=='success' for j in jobs),'PRODUCER_WRITER_JOBS')
+ jobs=history(PRIVATE,'/actions/runs/'+run_id+'/attempts/1/jobs','jobs',token,label='PRIVATE_PRODUCER_JOBS');P.need(len(jobs)==2 and {j['name'] for j in jobs}=={'H1 PRIVATE prepare','H1 PRIVATE writer'} and all(j.get('status')=='completed' and j.get('conclusion')=='success' for j in jobs),'PRODUCER_WRITER_JOBS')
  for label,step in [('H1 PRIVATE prepare','Prepare PRIVATE candidate'),('H1 PRIVATE writer','Commit PRIVATE checkpoint')]:
   job=next(j for j in jobs if j['name']==label);hits=[x for x in job.get('steps',[]) if x.get('name')==step];P.need(len(hits)==1 and hits[0].get('conclusion')=='success','PRODUCER_REQUIRED_STEP')
  files=P.artifact_files(PRIVATE,run_id,'h1-private-receipt',{'receipt.json'},token);r=P.strict(files['receipt.json']);P.need(set(r)=={'schema','repository','run','attempt','workflow_sha','code_commit','commit','expected','git_sends','readback','status','source','public_target','public_expected'} and r['schema']==2 and r['run']==run_id and r['repository']==PRIVATE and r['attempt']==1 and r['workflow_sha']==run['head_sha'] and r['code_commit']==code and r['readback']=='CONFIRMED' and r['git_sends'] in (0,1) and r['status'] in ('CONFIRMED','NO_CHANGE'),'PRODUCER_RECEIPT')
@@ -299,7 +315,7 @@ def relay(policy,env,event):
  r=private_receipt(policy,str(up['id']),code,env['GH_TOKEN'])
  P.need(r['workflow_sha']==up.get('head_sha'),'RELAY_PRODUCER_SOURCE_PIN')
  P.need(up.get('name')==('BGZONA B real source ' if real(c) else 'BGZONA B source ')+r['source']['run'],'RELAY_PRODUCER_NAME_BINDING')
- rows=history(PRIVATE,'/actions/workflows/'+str(c['relay_workflow_id'])+'/runs','workflow_runs',env['GH_TOKEN']);same=[x for x in rows if x.get('display_title')=='BGZONA B relay '+str(up['id'])];P.need(len(same)==1 and str(same[0]['id'])==env['GITHUB_RUN_ID'],'DUPLICATE_RELAY')
+ rows=history(PRIVATE,'/actions/workflows/'+str(c['relay_workflow_id'])+'/runs','workflow_runs',env['GH_TOKEN'],label='PRIVATE_RELAY_RUNS');same=[x for x in rows if x.get('display_title')=='BGZONA B relay '+str(up['id'])];P.need(len(same)==1 and str(same[0]['id'])==env['GITHUB_RUN_ID'],'DUPLICATE_RELAY')
  P.need(all(x.get('status')=='completed' or (str(x.get('id'))==env['GITHUB_RUN_ID'] and x.get('run_attempt')==1 and x.get('status')=='in_progress') for x in rows),'RELAY_CONCURRENT_OR_UNKNOWN')
  # Exactly one POST. No token in URL/arguments and no response-dependent second send.
  value=str(up['id'])
@@ -388,7 +404,7 @@ def completed_relay(policy,producer_id,token):
  import time
  c=config(policy);deadline=time.monotonic()+45
  while True:
-  rows=history(PRIVATE,'/actions/workflows/'+str(c['relay_workflow_id'])+'/runs','workflow_runs',token)
+  rows=history(PRIVATE,'/actions/workflows/'+str(c['relay_workflow_id'])+'/runs','workflow_runs',token,label='PRIVATE_RELAY_RUNS')
   hits=[r for r in rows if r.get('display_title')=='BGZONA B relay '+producer_id]
   P.need(len(hits)==1,'RELAY_HISTORY_UNKNOWN');r=hits[0]
   P.need(r.get('event')=='workflow_run' and r.get('run_attempt')==1 and r.get('actor',{}).get('id')==OWNER and r.get('head_branch')=='main','RELAY_IDENTITY')
