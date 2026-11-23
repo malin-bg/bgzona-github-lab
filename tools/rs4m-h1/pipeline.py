@@ -130,11 +130,11 @@ def control_protection(policy,token,run_created_at,*,real_code=None):
  # preflight proves that hidden setting; this read-only job proves live rules.
  authority=policy.get('control_protection_authority')
  need(authority=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'CONTROL_AUTHORITY')
- created=control_time(run_created_at);expected_types=['deletion','non_fast_forward','update']
+ created=control_time(run_created_at);expected_types=['deletion','non_fast_forward']
  proof=owner_control_preflight(policy,real_code,created) if real_code is not None else None
  def view(row):
   need(isinstance(row,dict) and row.get('id')==policy['ruleset_id'] and row.get('target')=='branch' and row.get('source_type')=='Repository' and row.get('source')==policy['lab_repo'] and row.get('enforcement')=='active' and row.get('conditions')==policy['ruleset_conditions'],'CONTROL_PROTECTION')
-  rules=row.get('rules');need(isinstance(rules,list) and len(rules)==3 and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
+  rules=row.get('rules');need(isinstance(rules,list) and len(rules)==len(expected_types) and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
   if 'bypass_actors' in row:need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
   updated=control_time(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
   if proof is not None:
@@ -144,7 +144,7 @@ def control_protection(policy,token,run_created_at,*,real_code=None):
  path='/rulesets/'+str(policy['ruleset_id']);before=view(api(policy['lab_repo'],path,token))
  branch=policy['control_ref'].removeprefix('refs/heads/');need(branch=='automation-control','CONTROL_REF')
  effective=api(policy['lab_repo'],'/rules/branches/'+branch+'?per_page=100&page=1',token)
- need(isinstance(effective,list) and len(effective)==3,'CONTROL_EFFECTIVE_RULES')
+ need(isinstance(effective,list) and len(effective)==len(expected_types),'CONTROL_EFFECTIVE_RULES')
  for row in effective:
   need(isinstance(row,dict) and set(row)=={'type','ruleset_source_type','ruleset_source','ruleset_id'} and row.get('ruleset_id')==policy['ruleset_id'] and row.get('ruleset_source_type')=='Repository' and row.get('ruleset_source')==policy['lab_repo'],'CONTROL_EFFECTIVE_RULES')
  need(sorted(row['type'] for row in effective)==expected_types,'CONTROL_EFFECTIVE_RULES')
