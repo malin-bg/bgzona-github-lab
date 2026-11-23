@@ -95,7 +95,7 @@ def activities(repo,token):
   path=stem+'?'+urlencode([('per_page','100'),cursor])
 
 
-def history(repo,path,key,token,*,label='HISTORY'):
+def history(repo,path,key,token,*,label='HISTORY',require_total=False):
  if path=='/activity' and key is None:return activities(repo,token)
  from urllib.request import parse_http_list
  stem='/repos/'+repo+path+('&' if '?' in path else '?')+'per_page=100&page='
@@ -116,6 +116,8 @@ def history(repo,path,key,token,*,label='HISTORY'):
   has_next=any(match[1]=='next' for match in links)
   reported=response.get('total_count',total) if key else None
   values.extend(rows)
+  if require_total:
+   check('total_count' in response and type(reported) is int and reported>=0,'INCOMPLETE_HISTORY')
   if key and 'total_count' in response:
    if total is None:total=reported
    check(reported==total,'HISTORY_CHANGED')
@@ -141,6 +143,24 @@ def source(policy,run_id,token):
  activity=history(PRIVATE,'/activity',None,token)
  S.verify(packet,int(run_id),1,run['head_sha'],run,activity,[p['sha'] for p in commit['parents']],ref=c['source_ref'])
  return {'run':str(run_id),'after':run['head_sha'],'before':packet['before'],'packet_sha256':P.digest(S.data(packet))}
+
+def check_private_real_activity(token,current,may_overlap):
+ # Removing the status filter keeps completed runs in the inventory.
+ rows=history(PRIVATE,'/actions/runs','workflow_runs',token,
+              label='PRIVATE_ACTIVE_RUNS',require_total=True)
+ created=P.control_time(current['created_at'])
+ P.need(any(isinstance(row,dict) and row.get('id')==current['id'] and
+            row.get('status')=='in_progress' and row.get('run_attempt')==1
+            for row in rows),'CONCURRENT_OR_UNKNOWN')
+ for row in rows:
+  P.need(isinstance(row,dict) and type(row.get('id')) is int and row['id']>0 and
+         row.get('status') in ('in_progress','queued','waiting','requested','pending','completed'),
+         'CONCURRENT_OR_UNKNOWN')
+  if row['status']=='completed':
+   P.need(isinstance(row.get('conclusion'),str) and bool(row['conclusion']),'CONCURRENT_OR_UNKNOWN')
+   if P.control_time(row.get('updated_at'))<created:continue
+  P.need(may_overlap(row),'CONCURRENT_OR_UNKNOWN')
+
 
 def context(policy,stage):
  c=config(policy);env=os.environ;private=stage.startswith('private-');repo=PRIVATE if private else LAB
@@ -175,9 +195,12 @@ def context(policy,stage):
           row.get('actor',{}).get('id')==OWNER and row.get('run_attempt')==1):
    return False
   return P.digest(P.workflow_bytes(PRIVATE,c['relay_workflow'],workflow_sha,token))==c['relay_workflow_sha256']
- for status in ('in_progress','queued','waiting','requested','pending'):
-  active=history(repo,'/actions/runs?status='+status,'workflow_runs',token,label='ACTIVE_'+status.upper())
-  P.need(all(same_or_legacy_route_check(row) for row in active),'CONCURRENT_OR_UNKNOWN')
+ if private and real(c):
+  check_private_real_activity(token,current,same_or_legacy_route_check)
+ else:
+  for status in ('in_progress','queued','waiting','requested','pending'):
+   active=history(repo,'/actions/runs?status='+status,'workflow_runs',token,label='ACTIVE_'+status.upper())
+   P.need(all(same_or_legacy_route_check(row) for row in active),'CONCURRENT_OR_UNKNOWN')
  return repo,code,event,binding
 
 def inert(repo,rev,path):
