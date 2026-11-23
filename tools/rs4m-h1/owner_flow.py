@@ -8,6 +8,10 @@ import pipeline as P
 ROOT=Path(__file__).resolve().parent
 PRIVATE='malin-bg/bgzona-private-intake';LAB='malin-bg/bgzona-github-lab'
 OWNER=252877943
+RECOVERY_PRODUCER='45208989311'
+RECOVERY_RELAY=45209284407
+RECOVERY_RELAY_JOB=137813384014
+RECOVERY_CODE='9fdff3fba807994a4b1cb787bd2771dc55f2b31b'
 
 def select_profile(policy,enabled_real):
  if not enabled_real:return policy
@@ -49,7 +53,11 @@ def public_binding(inputs,c):
  value=inputs.get('private_run','')
  if real(c):
   P.need(isinstance(value,str) and value.startswith('trace:'),'OWNER_LAB_TRACE_REQUIRED')
-  return {'trace':uuid_trace(value.removeprefix('trace:'))}
+  trace=value.removeprefix('trace:')
+  suffix=':recover-'+RECOVERY_PRODUCER
+  if trace.endswith(suffix):
+   return {'trace':uuid_trace(trace.removesuffix(suffix)),'recover_pending':True}
+  return {'trace':uuid_trace(trace)}
  P.need(re.fullmatch('[1-9][0-9]*',value),'OWNER_LAB_INPUTS')
  return {'private_run':value}
 
@@ -235,10 +243,17 @@ def prepare(policy,kind,code,event,binding,work,deps):
           'DURABLE_TRACE_BINDING')
    producer=str(private_rec['private_run_id'])
   else:producer=binding['private_run']
-  relay_run=completed_relay(policy,producer,app)
-  if real(c):
-   prove_relay_dispatch(relay_run,app,binding,code,private_rec['target'])
-  receipt=private_receipt(policy,producer,code,app)
+  if binding.get('recover_pending'):
+   P.need(producer==RECOVERY_PRODUCER,'RECOVERY_PRODUCER')
+   completed_relay(policy,producer,app,recovery=True)
+   receipt=private_receipt(policy,producer,RECOVERY_CODE,app)
+   P.need(receipt['status']=='CONFIRMED' and receipt['git_sends']==1 and
+          receipt['public_target']!=receipt['public_expected'],'RECOVERY_PRIVATE_WRITE')
+  else:
+   relay_run=completed_relay(policy,producer,app)
+   if real(c):
+    prove_relay_dispatch(relay_run,app,binding,code,private_rec['target'])
+   receipt=private_receipt(policy,producer,code,app)
   if real(c):P.need(private_rec['target']==receipt['public_target'] and
                    private_rec['expected']==receipt['public_expected'],'TRACE_TARGET_BINDING')
   P.need(head==receipt['commit'],'PRIVATE_STATE_MOVED')
@@ -402,7 +417,7 @@ def dev_proof(trace,commit,sid,seal):
 
 
 def dispatch_dev(policy,binding):
- P.need(real(config(policy)) and set(binding)=={'trace'} and
+ P.need(real(config(policy)) and set(binding) in ({'trace'},{'trace','recover_pending'}) and
         os.environ.get('H1_PUBLIC_SENDS')=='1','DEV_DISPATCH_SCOPE')
  raw=os.environ.get('H1_DEV_PROOF','')
  m=re.fullmatch(r'real-dev-([a-f0-9]{32})-([a-f0-9]{40})-([a-f0-9]{64})-([a-f0-9]{64})',raw)
@@ -423,7 +438,33 @@ def dispatch_dev(policy,binding):
  P.out('dev_run',dev_run)
  print('DEV_DISPATCH_SENT_ONCE')
 
-def completed_relay(policy,producer_id,token):
+def prove_pre_dispatch_stop(run,token):
+ # The pinned relay checks REAL in config() before any dispatch is possible.
+ P.need(run.get('id')==RECOVERY_RELAY and run.get('conclusion')=='failure','RECOVERY_RELAY')
+ run_path='/actions/runs/'+str(RECOVERY_RELAY)
+ jobs=history(PRIVATE,run_path+'/attempts/1/jobs','jobs',token,label='RECOVERY_RELAY_JOBS',require_total=True)
+ matching=[j for j in jobs if j.get('id')==RECOVERY_RELAY_JOB]
+ P.need(len(matching)==1,'RECOVERY_RELAY_JOB')
+ job=matching[0]
+ steps=[s for s in job.get('steps',[]) if s.get('name')=='Verify producer and wake B Lab once']
+ P.need(job.get('name')=='b-relay' and job.get('status')=='completed' and
+        job.get('conclusion')=='failure' and len(steps)==1 and
+        steps[0].get('conclusion')=='failure','RECOVERY_RELAY_JOB')
+ artifacts=P.api(PRIVATE,run_path+'/artifacts?per_page=1',token)
+ P.need(artifacts.get('total_count')==0 and artifacts.get('artifacts')==[],'RECOVERY_RELAY_ARTIFACT')
+ raw=P.request('/repos/'+PRIVATE+'/actions/jobs/'+str(RECOVERY_RELAY_JOB)+'/logs',token,binary=True)
+ lines=[re.sub(r'^\S+Z[ \t]+','',re.sub(r'\x1b\[[0-9;]*m','',line)).strip()
+        for line in raw.decode('utf-8-sig').splitlines()]
+ # Match runner output only, not shell source lines in the same log.
+ stop='B_STOP_OWNER_ROUTE_DISABLED'
+ flag='BGZONA_REAL_ENABLED: false'
+ error='##[error]Process completed with exit code 2.'
+ P.need(all(lines.count(x)==1 for x in (flag,stop,error)) and
+        lines.index(flag)<lines.index(stop)<lines.index(error) and
+        'B_RELAY_DISPATCHED_ONCE' not in lines,'RECOVERY_RELAY_STOP_PROOF')
+
+
+def completed_relay(policy,producer_id,token,*,recovery=False):
  import time
  c=config(policy);deadline=time.monotonic()+45
  while True:
@@ -432,8 +473,10 @@ def completed_relay(policy,producer_id,token):
   P.need(len(hits)==1,'RELAY_HISTORY_UNKNOWN');r=hits[0]
   P.need(r.get('event')=='workflow_run' and r.get('run_attempt')==1 and r.get('actor',{}).get('id')==OWNER and r.get('head_branch')=='main','RELAY_IDENTITY')
   if r.get('status')=='completed':
-   P.need(r.get('conclusion')=='success','RELAY_FAILED')
-   P.need(P.digest(P.workflow_bytes(PRIVATE,c['relay_workflow'],r['head_sha'],token))==c['relay_workflow_sha256'],'RELAY_WORKFLOW_PIN');return r
+   if not recovery:P.need(r.get('conclusion')=='success','RELAY_FAILED')
+   P.need(P.digest(P.workflow_bytes(PRIVATE,c['relay_workflow'],r['head_sha'],token))==c['relay_workflow_sha256'],'RELAY_WORKFLOW_PIN')
+   if recovery:prove_pre_dispatch_stop(r,token)
+   return r
   P.need(time.monotonic()<deadline,'RELAY_OUTCOME_UNKNOWN');time.sleep(2)
 
 if __name__=='__main__':
