@@ -82,7 +82,8 @@ def validate(binding,state,files):
    og=item['og'];expected=og.get('public_path',f"/{col}/og/{key}-{og['sha256'][:12]}{og['ext']}");need(row.get('og')==expected and 'artifact/'+expected[1:] in files,'OWN_OG_BINDING');target.update(og=expected[1:],ogPublicPath=expected[1:])
   else:need('og' not in row,'UNEXPECTED_OG')
   rows.append(target);metadata[key]={k:rev[k] for k in ('format','width','height','frames','loop','durations_ms')}
- need(used==ids,'CATALOG_INCOMPLETE')
+ need(all(item.get('state') in ('published','archived') for item in reg['items'].values()),'PUBLIC_ITEM_STATE')
+ need(used=={key for key,item in reg['items'].items() if item['state']=='published'},'CATALOG_INCOMPLETE')
  for item in reg['items'].values():
   for rev in item['revisions']:need(rev['public_path'].removeprefix('/') in public,'MISSING_HISTORICAL_REVISION')
  need(set(manifest)=={'schema','files'} and manifest['schema']==1,'PUBLIC_MANIFEST_FIELDS')

@@ -65,7 +65,9 @@ def units(files,registry):
  result={}
  for path,raw in sorted(files.items()):
   parts=PurePosixPath(path).parts
-  if len(parts)==5 and parts[0]=='library' and parts[1] in COLS and parts[2]=='published':
+  library_state=None
+  if len(parts)==5 and parts[0]=='library' and parts[1] in COLS and parts[2] in ('published','archived'):
+   library_state=parts[2]
    key=parts[3];need(re.fullmatch('bgzona-'+COLS[parts[1]]+'-[0-9]{5}',key) is not None,'INVALID_MANAGED_ID');unit=key;col=parts[1]
   elif len(parts)==5 and parts[:2]==('incoming','replace') and parts[2] in COLS:
    key='bgzona-'+COLS[parts[2]]+'-'+parts[3];need(key in registry['items'],'UNKNOWN_REPLACEMENT_ID');unit=key;col=parts[2]
@@ -75,6 +77,9 @@ def units(files,registry):
    unit='new:'+parts[1]+':'+stem.casefold();key=None;col=parts[1]
   else:raise Stop('INVALID_MEDIA_NAMESPACE')
   row=result.setdefault(unit,dict(id=key,unit=unit,collection=col,files={}))
+  if library_state is not None:
+   need(row.get('library_state',library_state)==library_state,'DUPLICATE_LIBRARY_STATE')
+   row['library_state']=library_state
   row['files'][path]=raw
  return result
 
@@ -99,7 +104,16 @@ def apply(row,registry,inputs,buffers,evidence):
  hashes={p:digest(v) for p,v in sorted(files.items())};stamp=digest(data(hashes))
  if old_input.get('unit')==stamp:return key,'UNCHANGED'
  old=deepcopy(registry['items'].get(key));description=text(files[txt]) if txt else ''
- image_path=replacement or image;source_sha=hashes[image_path];changed=old is None or (replacement and old_input.get('replacement')!=source_sha) or (not replacement and old_input.get('managed_image')!=hashes[image])
+ if row.get('library_state')=='archived':
+  if old is None or replacement:raise Reject('ARCHIVE_REQUIRES_EXISTING_ITEM')
+  if old['state']=='archived':return key,'UNCHANGED'
+  old['state']='archived';registry['items'][key]=old
+  inputs[identity]=dict(item=key,unit=stamp,managed_image=hashes[image],replacement=None,og_input=hashes[og] if og else None)
+  return key,'ACCEPTED'
+ if old is not None and old['state']!='published':raise Reject('ARCHIVED_ITEM')
+ if old is not None and old_input and old_input.get('managed_image')!=hashes[image]:
+  raise Reject('EXPLICIT_REPLACEMENT_REQUIRED')
+ image_path=replacement or image;source_sha=hashes[image_path];changed=old is None or (replacement and old_input.get('replacement')!=source_sha)
  if changed:
   original,meta=clean(files[image_path],PurePosixPath(image_path).suffix.lower(),'original',evidence)
  else:

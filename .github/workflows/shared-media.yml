@@ -1036,7 +1036,7 @@
           "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
           "with": {
             "repository": "malin-bg/bgzona-win-dev",
-            "ref": "${{ startsWith(inputs.private_run, 'trace:') && '2f4f085c871e06f2d77741aee858d449ade9f334' || '12336f4e68100a0934913c5a97c8fd41b015f20f' }}",
+            "ref": "${{ startsWith(inputs.private_run, 'trace:') && '578ad7ad111f1d76015aa13ec958a2f0892ffe1c' || '12336f4e68100a0934913c5a97c8fd41b015f20f' }}",
             "path": "dev-site",
             "submodules": "recursive",
             "persist-credentials": false,
