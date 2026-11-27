@@ -1118,7 +1118,7 @@
       ],
       "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.actor_id == '252877943' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'b-owner' && startsWith(inputs.private_run, 'trace:') && needs.h1-write.outputs.public_sends == '1' && needs.h1-consumer.outputs.dev_proof != '' && (!startsWith(inputs.private_run, 'trace:') || vars.BGZONA_REAL_ENABLED == 'true')",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 4,
+      "timeout-minutes": 6,
       "environment": "r18h-control",
       "permissions": {
         "contents": "read",
@@ -1159,6 +1159,33 @@
           }
         },
         {
+          "id": "prod-app-guard",
+          "name": "Validate advisory PROD promotion context",
+          "env": {
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
+            "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}"
+          },
+          "run": "python3 -B code/tools/rs4m-h1/prod_handoff.py --check-forward",
+          "continue-on-error": true,
+          "timeout-minutes": 1
+        },
+        {
+          "uses": "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+          "id": "prod-app",
+          "with": {
+            "client-id": "${{ vars.BGZONA_R_CLIENT_ID }}",
+            "private-key": "${{ secrets.BGZONA_R_PRIVATE_KEY }}",
+            "owner": "malin-bg",
+            "repositories": "bgzona-win",
+            "permission-actions": "write"
+          },
+          "name": "Prepare the existing PROD Actions token",
+          "if": "steps.prod-app-guard.outcome == 'success'",
+          "continue-on-error": true,
+          "timeout-minutes": 1
+        },
+        {
           "name": "Dispatch the exact trusted snapshot to DEV once",
           "shell": "bash",
           "env": {
@@ -1184,6 +1211,21 @@
             "retention-days": 1,
             "overwrite": false
           }
+        },
+        {
+          "id": "prod-forward",
+          "name": "Forward the exact DEV admission to PROD",
+          "if": "steps.prod-app.outcome == 'success' && steps.dev-send.outputs.dev_run != ''",
+          "continue-on-error": true,
+          "timeout-minutes": 1,
+          "env": {
+            "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
+            "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
+            "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}",
+            "DEV_RUN_ID": "${{ steps.dev-send.outputs.dev_run }}",
+            "PROD_ACTIONS_TOKEN": "${{ steps.prod-app.outputs.token }}"
+          },
+          "run": "python3 -B code/tools/rs4m-h1/prod_handoff.py --forward"
         }
       ]
     }

@@ -36,9 +36,9 @@ def context(token):
     env = os.environ
     code = env['GITHUB_SHA']
     P.need(env['GITHUB_REPOSITORY'] == LAB and env['GITHUB_REPOSITORY_ID'] == '1426765395'
-           and env['GITHUB_REF'] == 'refs/heads/main' and env['GITHUB_ACTOR_ID'] == str(OWNER)
+           and env['GITHUB_REF'] == 'refs/heads/automation-control' and env['GITHUB_REF_PROTECTED'] == 'true' and env['GITHUB_ACTOR_ID'] == str(OWNER)
            and env['GITHUB_RUN_ATTEMPT'] == '1' and env['BGZONA_REAL_ENABLED'] == 'true'
-           and env['GITHUB_WORKFLOW_REF'] == LAB + '/.github/workflows/real-prod.yml@refs/heads/main'
+           and env['GITHUB_WORKFLOW_REF'] == LAB + '/.github/workflows/real-prod.yml@refs/heads/automation-control'
            and subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == code
            and P.ref(LAB, 'refs/heads/main', token) == P.ref(LAB, policy['control_ref'], token) == code,
            'PROMOTION_CONTEXT')
@@ -47,14 +47,9 @@ def context(token):
     event = P.strict(Path(env['GITHUB_EVENT_PATH']).read_bytes())
     P.need(event['repository']['id'] == 1426765395 and event['sender']['id'] == OWNER,
            'PROMOTION_EVENT')
-    if env['GITHUB_EVENT_NAME'] in ('push', 'workflow_dispatch'):
-        P.need(not event.get('inputs'), 'BOOTSTRAP_INPUTS')
-        return BOOTSTRAP, BOOTSTRAP_CODE, True
-    run = event['workflow_run']
-    P.need(env['GITHUB_EVENT_NAME'] == 'workflow_run' and event['action'] == 'completed'
-           and run['workflow_id'] == 408732936 and run['head_sha'] == code,
-           'LAB_EVENT_BINDING')
-    return run['id'], code, False
+    P.need(env['GITHUB_EVENT_NAME'] in ('push', 'workflow_dispatch')
+           and not event.get('inputs'), 'BOOTSTRAP_EVENT')
+    return BOOTSTRAP, BOOTSTRAP_CODE, True
 
 
 def admit(token):
@@ -102,6 +97,32 @@ def dispatch(token):
         print('PROD_REQUEST_ALREADY_EXISTS')
         return
     P.need(P.ref(LAB, DATA_REF, token) == commit, 'PUBLIC_SUPERSEDED')
+    return send(str(lab_run), dev_run, commit, sid)
+
+
+def forward_context():
+    env = os.environ
+    P.need(env['GITHUB_REPOSITORY'] == LAB and env['GITHUB_REPOSITORY_ID'] == '1426765395'
+           and env['GITHUB_REF'] == 'refs/heads/automation-control'
+           and env['GITHUB_REF_PROTECTED'] == 'true' and env['GITHUB_ACTOR_ID'] == str(OWNER)
+           and env['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and env['GITHUB_RUN_ATTEMPT'] == '1'
+           and env['GITHUB_WORKFLOW_REF'] == LAB + '/.github/workflows/shared-media.yml@refs/heads/automation-control'
+           and env['GITHUB_JOB'] == 'h1-dispatch-dev' and env['H1_PUBLIC_SENDS'] == '1'
+           and env['H1_WORKFLOW_SHA'] == env['GITHUB_SHA']
+           and re.fullmatch(RUN, env['GITHUB_RUN_ID']), 'FORWARD_CONTEXT')
+    proof = re.fullmatch(PROOF, env['H1_DEV_PROOF'])
+    P.need(proof, 'FORWARD_PROOF')
+    return (env['GITHUB_RUN_ID'], *proof.groups())
+
+
+def forward():
+    lab_run, commit, sid = forward_context()
+    dev_run = os.environ['DEV_RUN_ID']
+    P.need(re.fullmatch(RUN, dev_run), 'FORWARD_DEV_RUN')
+    send(lab_run, dev_run, commit, sid)
+
+
+def send(lab_run, dev_run, commit, sid):
     body = json.dumps({'ref': 'main', 'inputs': {'accepted_cid': sid,
                        'input_trust': f'rs4n-prod:{lab_run}:{dev_run}:{commit}'}}).encode()
     req = Request('https://api.github.com/repos/' + PROD + '/actions/workflows/249807408/dispatches',
@@ -110,7 +131,7 @@ def dispatch(token):
                       'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
                       'X-GitHub-Api-Version': '2026-03-10', 'User-Agent': 'BGZONA-PROD-promotion'})
     try:
-        with build_opener(P.NoRedirect).open(req, timeout=30) as response:
+        with build_opener(P.NoRedirect).open(req, timeout=10) as response:
             from owner_flow import dispatch_run_id
             prod_run = dispatch_run_id(response, PROD)
     except Exception:
@@ -121,9 +142,16 @@ def dispatch(token):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dispatch', action='store_true')
+    parser.add_argument('--forward', action='store_true')
+    parser.add_argument('--check-forward', action='store_true')
     args = parser.parse_args()
     try:
-        if args.dispatch:
+        if args.check_forward:
+            P.verified_code()
+            forward_context()
+        elif args.forward:
+            forward()
+        elif args.dispatch:
             dispatch(os.environ['GH_TOKEN'])
         else:
             admit(os.environ['GH_TOKEN'])

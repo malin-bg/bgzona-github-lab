@@ -1,20 +1,9 @@
 {
   "name": "BGZONA promote accepted DEV to PROD",
   "on": {
-    "workflow_run": {
-      "workflows": [
-        "R18H controlled independent D3 and DEV"
-      ],
-      "types": [
-        "completed"
-      ],
-      "branches": [
-        "automation-control"
-      ]
-    },
     "push": {
       "branches": [
-        "main"
+        "automation-control"
       ],
       "paths": [
         ".github/workflows/real-prod.yml"
@@ -32,7 +21,7 @@
   },
   "jobs": {
     "promote": {
-      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/main' && github.actor_id == '252877943' && github.run_attempt == 1 && vars.BGZONA_REAL_ENABLED == 'true' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.display_title == 'BGZONA B real'))",
+      "if": "github.repository_id == '1426765395' && github.ref == 'refs/heads/automation-control' && github.ref_protected && github.actor_id == '252877943' && github.run_attempt == 1 && vars.BGZONA_REAL_ENABLED == 'true'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 15,
       "env": {
@@ -70,7 +59,8 @@
           },
           "run": "python3 -B tools/rs4m-h1/prod_handoff.py --dispatch"
         }
-      ]
+      ],
+      "environment": "r18h-control"
     }
   }
 }
