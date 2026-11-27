@@ -871,7 +871,6 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
@@ -902,7 +901,6 @@
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "PRIVATE_READ_TOKEN": "${{ steps.app.outputs.token }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-prepare --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
@@ -952,7 +950,6 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
@@ -973,7 +970,6 @@
             "H1_PROPOSAL_SHA": "${{ needs.h1-export.outputs.proposal_sha }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
             "H1_HANDOFF_MODE": "${{ needs.h1-export.outputs.handoff_mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py public-write --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
@@ -1025,7 +1021,6 @@
             "GH_TOKEN": "${{ github.token }}",
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" --guard-only \"${extra[@]}\"\n"
@@ -1063,7 +1058,6 @@
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "H1_DATA_COMMIT": "${{ needs.h1-write.outputs.data_commit }}",
             "B_OWNER_MODE": "${{ inputs.mode }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\nextra=(); if [[ \"$B_OWNER_MODE\" == b-owner ]]; then extra=(--owner-flow); fi\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py consumer --deps \"$RUNNER_TEMP/h1-pillow\" \"${extra[@]}\"\n"
@@ -1142,7 +1136,6 @@
             "H1_WORKFLOW_SHA": "${{ github.workflow_sha }}",
             "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
             "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py dev-dispatch --deps \"$RUNNER_TEMP/h1-pillow\" --owner-flow --guard-only\n"
@@ -1194,7 +1187,6 @@
             "H1_PUBLIC_SENDS": "${{ needs.h1-write.outputs.public_sends }}",
             "H1_DEV_PROOF": "${{ needs.h1-consumer.outputs.dev_proof }}",
             "DEV_DISPATCH_TOKEN": "${{ steps.dev-app.outputs.token }}",
-            "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}",
             "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
           },
           "run": "set -euo pipefail\n/usr/bin/python3 -I -B code/tools/rs4m-h1/pipeline.py dev-dispatch --deps \"$RUNNER_TEMP/h1-pillow\" --owner-flow\n",

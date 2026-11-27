@@ -23,7 +23,7 @@
       ]
     }
   },
-  "private_workflow_sha256": "e886e9e8d7eb2f83a7407ac20258a4186487c0cf5ecdf471d25e6fb60541d06a",
+  "private_workflow_sha256": "3181638fd4e1fbed79f29ec8bf1bbaf92feece11651c5aac20e1f4ce160710db",
   "h1g_seed_tips": {
     "source": "03c878933710725a4a1ca68ee2671d3ad1e126f7",
     "state": "c87ab407c5fec83f29c9edd259fda7b50d5c7571",
@@ -48,9 +48,8 @@
     }
   ],
   "control_protection_authority": {
-    "mode": "owner-admin-preflight-and-live-effective",
-    "expected_bypass_actors": [],
-    "no_ruleset_update_since_run_creation": true
+    "node_id": "RRS_lACqUmVwb3NpdG9yec5VCrZTzgGWwgo",
+    "verified_no_bypass_at": "2026-11-23T18:20:44.377+02:00"
   },
   "owner_flow": {
     "enabled": false,
@@ -64,20 +63,20 @@
     "Lab_mode": "b-owner",
     "DEV_code_commit": "12336f4e68100a0934913c5a97c8fd41b015f20f",
     "test_scope": "SYNTHETIC_ONLY; explicit owner test-filter/pin approval required",
-    "relay_workflow_sha256": "28dfcea1463e9c564de45cda93586f9930befe7b3e7e2fdc873d6233987c0239"
+    "relay_workflow_sha256": "3711b2a96ad87732673223bb1f54d9d4ad3da236f4b9291cabfb6045c83267db"
   },
   "real_owner_flow": {
     "enabled": false,
     "source_ref": "refs/heads/cp2b-private-standard-source-r1",
     "source_workflow": ".github/workflows/cp2b-push-proof.yml",
     "source_workflow_id": 407190822,
-    "source_workflow_sha256": "af67c717e7e773eea8a1bfd0b33400d96164889f79b03f9ee2e2f815ab73758b",
+    "source_workflow_sha256": "ef9877d7f4aace911e05463b37b2a6985444921465ca132ea137b6de677e15a8",
     "private_workflow_id": 419182651,
     "relay_workflow_id": 411050691,
     "relay_workflow": ".github/workflows/c5-private-lab-relay.yml",
     "Lab_mode": "b-owner",
     "DEV_code_commit": "578ad7ad111f1d76015aa13ec958a2f0892ffe1c",
     "test_scope": "REAL_ONLY; exact disabled setup",
-    "relay_workflow_sha256": "28dfcea1463e9c564de45cda93586f9930befe7b3e7e2fdc873d6233987c0239"
+    "relay_workflow_sha256": "3711b2a96ad87732673223bb1f54d9d4ad3da236f4b9291cabfb6045c83267db"
   }
 }

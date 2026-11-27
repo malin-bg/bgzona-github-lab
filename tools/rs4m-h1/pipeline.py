@@ -110,37 +110,21 @@ def control_time(value):
  need(parsed.tzinfo is not None,'CONTROL_TIMESTAMP');return parsed
 
 
-def owner_control_preflight(policy,code,run_created_at):
- # This variable is supplied only from GitHub Actions settings, never from inputs.
- try:record=strict(os.environ.get('BGZONA_CONTROL_PREFLIGHT','').encode())
- except (ValueError,UnicodeError):raise Stop('CONTROL_OWNER_PREFLIGHT_REQUIRED') from None
- need(isinstance(record,dict) and set(record)=={'repository','ref','ruleset_id','node_id',
-      'updated_at','bypass_actors','code_commit'} and record['repository']==policy['lab_repo']
-      and record['ref']==policy['control_ref'] and record['ruleset_id']==policy['ruleset_id']
-      and type(record['ruleset_id']) is int and isinstance(record['node_id'],str)
-      and record['node_id'] and record['bypass_actors']==[]
-      and re.fullmatch('[0-9a-f]{40}',code) and record['code_commit']==code,
-      'CONTROL_OWNER_PREFLIGHT_SCOPE')
- need(control_time(record['updated_at'])<run_created_at,'CONTROL_OWNER_PREFLIGHT_STALE')
- return record
-
-
-def control_protection(policy,token,run_created_at,*,real_code=None):
- # Missing bypass metadata is not an empty list. The separately authorized OWNER
- # preflight proves that hidden setting; this read-only job proves live rules.
- authority=policy.get('control_protection_authority')
- need(authority=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'CONTROL_AUTHORITY')
+def control_protection(policy,token,run_created_at):
+ # Normal callers can see effective rules but GitHub hides the bypass list.
+ # In that case require the unchanged, independently verified ruleset revision.
  created=control_time(run_created_at);expected_types=['deletion','non_fast_forward']
- proof=owner_control_preflight(policy,real_code,created) if real_code is not None else None
+ authority=policy['control_protection_authority']
  def view(row):
   need(isinstance(row,dict) and row.get('id')==policy['ruleset_id'] and row.get('target')=='branch' and row.get('source_type')=='Repository' and row.get('source')==policy['lab_repo'] and row.get('enforcement')=='active' and row.get('conditions')==policy['ruleset_conditions'],'CONTROL_PROTECTION')
   rules=row.get('rules');need(isinstance(rules,list) and len(rules)==len(expected_types) and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
-  if 'bypass_actors' in row:need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
   updated=control_time(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
-  if proof is not None:
-   need(row.get('node_id')==proof['node_id'] and updated==control_time(proof['updated_at']),
-        'CONTROL_CHANGED_SINCE_OWNER_PREFLIGHT')
-  return (updated,'LIVE_EMPTY' if 'bypass_actors' in row else 'OWNER_PREFLIGHT_ONLY')
+  need(row.get('node_id')==authority['node_id'],'CONTROL_RULESET_IDENTITY')
+  if 'bypass_actors' in row:
+   need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
+  else:
+   need(updated==control_time(authority['verified_no_bypass_at']),'CONTROL_BYPASS_UNVERIFIED')
+  return updated
  path='/rulesets/'+str(policy['ruleset_id']);before=view(api(policy['lab_repo'],path,token))
  branch=policy['control_ref'].removeprefix('refs/heads/');need(branch=='automation-control','CONTROL_REF')
  effective=api(policy['lab_repo'],'/rules/branches/'+branch+'?per_page=100&page=1',token)
@@ -149,7 +133,7 @@ def control_protection(policy,token,run_created_at,*,real_code=None):
   need(isinstance(row,dict) and set(row)=={'type','ruleset_source_type','ruleset_source','ruleset_id'} and row.get('ruleset_id')==policy['ruleset_id'] and row.get('ruleset_source_type')=='Repository' and row.get('ruleset_source')==policy['lab_repo'],'CONTROL_EFFECTIVE_RULES')
  need(sorted(row['type'] for row in effective)==expected_types,'CONTROL_EFFECTIVE_RULES')
  need(view(api(policy['lab_repo'],path,token))==before,'CONTROL_CHANGED_DURING_CHECK')
- return {'live_rules':'VERIFIED','bypass_authority':before[1]}
+ return {'live_rules':'VERIFIED','bypass_authority':'VERIFIED_RULESET'}
 
 def private_history(policy,current,token,history=None):
  # Exactly the two audited pre-publisher failures plus one separately authorized run.

@@ -3,7 +3,7 @@ Inputs are acquired LOCAL bare repositories, not URLs or workflow PASS assertion
 Does not issue a token, fetch HTTPS, push or dispatch.
 """
 from pathlib import Path
-import argparse,json,os,subprocess,sys
+import argparse,json,os,re,subprocess,sys
 D=Path(__file__).resolve().parent
 
 def main():
@@ -16,7 +16,8 @@ def main():
   q=subprocess.run([sys.executable,'-I','-B',str(Path(__file__).resolve()),a.phase,'--workspace',str(work),'--isolated-child','--source-ref',a.source_ref,'--deps',a.deps]+(['--producer-id',str(a.producer_id)] if a.producer_id else []),env=env,capture_output=True)
   # Failure output might contain source-derived paths. Export only fixed categories.
   if q.returncode:
-   print('PREPARATION_STOP');return 2
+   marker=re.fullmatch(rb'PREPARATION_STOP:[A-Z0-9_]+',q.stdout.strip())
+   print(marker[0].decode('ascii') if marker else 'PREPARATION_STOP');return 2
   print('PREPARATION_COMPLETE');return 0
  sys.path[:0]=[str(D),str(Path(a.deps).resolve())]
  import boundary as B
@@ -28,7 +29,12 @@ def main():
  B.preparation_context()
  P.need(work.is_dir() and (work/'private.git').is_dir() and (work/'public.git').is_dir(),'ACQUIRED_REPOSITORIES_REQUIRED')
  if a.phase=='private':
-  result=B.prepare(work/'private.git',work/'public.git',work,checkpoint=False,producer_id=a.producer_id)
+  try:
+   result=B.prepare(work/'private.git',work/'public.git',work,checkpoint=False,producer_id=a.producer_id)
+  except P.Stop as exc:
+   reason=str(exc)
+   print('PREPARATION_STOP:'+reason if re.fullmatch('[A-Z0-9_]+',reason) else 'PREPARATION_STOP')
+   return 2
   client=work/'private.git'
  else:
   result=B.export_candidate(work/'private.git',work/'public.git',work)

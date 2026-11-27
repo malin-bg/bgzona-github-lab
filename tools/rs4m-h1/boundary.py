@@ -157,7 +157,7 @@ def prepare(private,public,work,stop_before_private=False,checkpoint=True,produc
     require_legacy_release(folder,before,public_state)
   else:
    P.need(producer_id is None,'SYNTHETIC_TRACE')
-  result=P.publish(private,folder,target=source)
+  result=P.publish(private,folder,target=source, final_tree=real)
   if rec and not result['commits']:return {'status':'NO_CHANGE','private':old,'public':rec['target'],'pushes':0,'private_writes':0}
   payload,view=public_tree(folder)
   with TemporaryDirectory(dir=work,prefix='candidate-') as scratch:

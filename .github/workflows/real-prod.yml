@@ -1,14 +1,6 @@
 {
   "name": "BGZONA promote accepted DEV to PROD",
   "on": {
-    "push": {
-      "branches": [
-        "automation-control"
-      ],
-      "paths": [
-        ".github/workflows/real-prod.yml"
-      ]
-    },
     "workflow_dispatch": {}
   },
   "permissions": {
@@ -26,8 +18,7 @@
       "timeout-minutes": 15,
       "env": {
         "GH_TOKEN": "${{ github.token }}",
-        "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}",
-        "BGZONA_CONTROL_PREFLIGHT": "${{ vars.BGZONA_CONTROL_PREFLIGHT }}"
+        "BGZONA_REAL_ENABLED": "${{ vars.BGZONA_REAL_ENABLED }}"
       },
       "steps": [
         {

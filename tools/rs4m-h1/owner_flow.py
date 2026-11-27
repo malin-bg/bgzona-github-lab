@@ -186,7 +186,7 @@ def context(policy,stage):
  else:
   P.need(env.get('GITHUB_EVENT_NAME')==current.get('event')=='workflow_dispatch' and env.get('GITHUB_REF_PROTECTED')=='true' and workflow_sha==code,'PROTECTED_LAB_CONTEXT')
   binding=public_binding(event.get('inputs',{}),c)
- P.control_protection(policy,token,current['created_at'],real_code=code if real(c) else None)
+ P.control_protection(policy,token,current['created_at'])
  rows=history(repo,'/actions/workflows/'+str(c['private_workflow_id'] if private else 408732936)+'/runs','workflow_runs',token,
               label='PRIVATE_PRODUCER_RUNS' if private else 'LAB_WORKFLOW_RUNS')
  if private:expected=('BGZONA B real source ' if real(c) else 'BGZONA B source ')+binding['run']
@@ -262,7 +262,19 @@ def prepare(policy,kind,code,event,binding,work,deps):
  if kind=='private' and public_head!=rec['target']:
   P.need(public_head==rec['expected'],'PUBLIC_CONFLICT');state=inert(work/'private.git',private_head,'state.json');P.need(state['source_cursor']==binding['after'],'PENDING_PREVIOUS_EXPORT_NEW_SOURCE_RETAINED');folder=work/'private-handoff';folder.mkdir();P.dump(folder/'proposal.json',{'expected':private_head,'commit':private_head,'status':'READBACK'});handoff_context(kind,code,folder,binding,'PENDING');return
  q=subprocess.run([sys.executable,'-I','-B',str(ROOT/'prepare_phase.py'),kind,'--workspace',str(work),'--deps',str(Path(deps).resolve()),'--source-ref',c['source_ref']]+(['--producer-id',os.environ['GITHUB_RUN_ID']] if real(c) and kind=='private' else []),capture_output=True)
- P.need(q.returncode==0,'CREDENTIAL_FREE_PREPARATION_STOP');folder=work/(kind+'-handoff');out=P.strict((folder/'result.json').read_bytes());mode='CANDIDATE'
+ if q.returncode:
+  marker=re.fullmatch(rb'PREPARATION_STOP:([A-Z0-9_]+)',q.stdout.strip())
+  reason=marker[1].decode('ascii') if marker else 'CREDENTIAL_FREE_PREPARATION_STOP'
+  advice={'DUPLICATE_ORIGINAL':'This original already belongs to a publication in the same collection. Edit the existing ID.',
+          'REPLACEMENT_ID_NOT_EDITABLE':'Use the five-digit number of an existing published item.',
+          'MOVE_ALREADY_COMPLETED':'Remove the copied incoming bundle and edit its library folder.',
+          'CLEANUP_BINDING':'Check the published ID and move its complete incoming bundle unchanged.',
+          'MOVE_BUNDLE_EXACT_BYTES':'Move the original unmodified. Use incoming/replace for a new revision.',
+          'AMBIGUOUS_OR_INCOMPLETE_BUNDLE':'Keep one original, one optional TXT and one optional OG.'}
+  if reason.startswith('PRIVACY_'): print('Privacy Gate rejected a file. Export a clean image in the original format and push the correction.')
+  elif reason in advice: print(advice[reason])
+  raise P.Stop(reason)
+ folder=work/(kind+'-handoff');out=P.strict((folder/'result.json').read_bytes());mode='CANDIDATE'
  if out['status'] in ('NO_CHANGE','CONFIRMED'):
   head=private_head if kind=='private' else public_head;P.dump(folder/'proposal.json',{'expected':head,'commit':head,'status':'READBACK'});mode='NO_CHANGE' if kind=='private' else 'CONFIRMED'
  else:P.need(out['status']==('PRIVATE_PREPARED' if kind=='private' else 'PUBLIC_PREPARED'),'PREPARATION_RESULT')
@@ -289,7 +301,7 @@ def write(policy,kind,code,binding,work,deps):
  if mode=='CANDIDATE':
   if real(c):
    live=P.api(repo,'/actions/runs/'+os.environ['GITHUB_RUN_ID'],os.environ['GH_TOKEN'])
-   P.control_protection(policy,os.environ['GH_TOKEN'],live['created_at'],real_code=code)
+   P.control_protection(policy,os.environ['GH_TOKEN'],live['created_at'])
   listing=G.run(client,'bundle','list-heads',str(folder/'candidate.bundle')).stdout.decode().splitlines();P.need(listing==[proposal['commit']+' refs/heads/s1-handoff-candidate'],'BUNDLE_IDENTITY');G.run(client,'bundle','verify',str(folder/'candidate.bundle'));G.run(client,'fetch','--no-tags',str(folder/'candidate.bundle'),'refs/heads/s1-handoff-candidate');result=W.write_once(client,proposal,write_policy,W.HTTPSWriter(write_policy,os.environ['GH_TOKEN']))
   P.need(result['status']=='CONFIRMED' and result['sends'] in (0,1),'WRITE_UNKNOWN_NO_RETRY')
  else:
@@ -349,7 +361,7 @@ def relay(policy,env,event):
  P.need(current.get('workflow_id')==c['relay_workflow_id'] and current.get('event')=='workflow_run' and current.get('run_attempt')==1 and current.get('actor',{}).get('id')==OWNER and current.get('head_branch')=='main' and current.get('head_sha')==env.get('H1_WORKFLOW_SHA') and current.get('repository',{}).get('id')==1429436685,'RELAY_NATIVE_IDENTITY')
  P.need(str(current.get('id'))==env['GITHUB_RUN_ID'] and current.get('repository',{}).get('full_name')==PRIVATE and current.get('head_repository',{}).get('id')==1429436685 and current.get('head_repository',{}).get('full_name')==PRIVATE and current.get('status')=='in_progress' and current.get('conclusion') is None and current.get('display_title')=='BGZONA B relay '+str(up['id']) and P.path_matches(current.get('path'),c['relay_workflow'],'main') and current.get('triggering_actor',current['actor']).get('id')==OWNER,'RELAY_NATIVE_CONTEXT')
  P.need(P.digest(P.workflow_bytes(PRIVATE,c['relay_workflow'],current['head_sha'],env['GH_TOKEN']))==c['relay_workflow_sha256'],'RELAY_WORKFLOW_PIN')
- P.control_protection(policy,env['GH_TOKEN'],current['created_at'],real_code=code if real(c) else None)
+ P.control_protection(policy,env['GH_TOKEN'],current['created_at'])
  r=private_receipt(policy,str(up['id']),code,env['GH_TOKEN'])
  P.need(r['workflow_sha']==up.get('head_sha'),'RELAY_PRODUCER_SOURCE_PIN')
  P.need(up.get('name')==('BGZONA B real source ' if real(c) else 'BGZONA B source ')+r['source']['run'],'RELAY_PRODUCER_NAME_BINDING')

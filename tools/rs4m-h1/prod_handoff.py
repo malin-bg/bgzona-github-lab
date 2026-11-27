@@ -43,7 +43,7 @@ def context(token):
            and P.ref(LAB, 'refs/heads/main', token) == P.ref(LAB, policy['control_ref'], token) == code,
            'PROMOTION_CONTEXT')
     current = P.api(LAB, '/actions/runs/' + env['GITHUB_RUN_ID'], token)
-    P.control_protection(policy, token, current['created_at'], real_code=code)
+    P.control_protection(policy, token, current['created_at'])
     event = P.strict(Path(env['GITHUB_EVENT_PATH']).read_bytes())
     P.need(event['repository']['id'] == 1426765395 and event['sender']['id'] == OWNER,
            'PROMOTION_EVENT')

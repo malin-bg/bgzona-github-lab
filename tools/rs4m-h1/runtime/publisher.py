@@ -98,11 +98,34 @@ def bundle(row):
 def og_path(col,key,own):
  return own.get('public_path',f'{col}/og/{key}-{own["sha256"][:12]}{own["ext"]}').lstrip('/')
 
-def apply(row,registry,inputs,buffers,evidence):
+def incoming_target(rows, inputs, item):
+ matches=[(key,row) for key,row in rows.items()
+          if row['id'] is None and inputs.get(key,{}).get('item')==item]
+ need(len(matches)<=1,'AMBIGUOUS_BOUND_INCOMING')
+ return matches[0] if matches else (None,None)
+
+def existing_input(inputs, unit, row):
+ old=inputs.get(unit,{})
+ if row['id'] is None:
+  return old
+ if old:
+  return old
+ # A complete byte-identical move transfers the editing location, not the ID.
+ matches=[prior for key,prior in inputs.items()
+          if key.startswith('new:') and prior.get('item')==row['id']]
+ if len(matches)!=1:
+  raise Reject('CLEANUP_BINDING')
+ prior=matches[0]
+ image,txt,og,_=bundle(row)
+ if digest(row['files'][image])!=prior['managed_image']:
+  raise Reject('MOVE_BUNDLE_EXACT_BYTES')
+ return prior
+
+def apply(row,registry,inputs,buffers,evidence,*,old_input=None, final_tree=False):
  """All changes are in detached dictionaries until the ENTIRE item succeeds."""
- files=row['files'];identity=row['id'] or row['unit'];old_input=inputs.get(identity,{});key=row['id'] or old_input.get('item');col=row['collection'];image,txt,og,replacement=bundle(row)
+ files=row['files'];identity=row['id'] or row['unit'];old_input=inputs.get(identity,{}) if old_input is None else old_input;key=row['id'] or old_input.get('item');col=row['collection'];image,txt,og,replacement=bundle(row)
  hashes={p:digest(v) for p,v in sorted(files.items())};stamp=digest(data(hashes))
- if old_input.get('unit')==stamp:return key,'UNCHANGED'
+ if old_input.get('unit')==stamp and identity in inputs:return key,'UNCHANGED'
  old=deepcopy(registry['items'].get(key));description=text(files[txt]) if txt else ''
  if row.get('library_state')=='archived':
   if old is None or replacement:raise Reject('ARCHIVE_REQUIRES_EXISTING_ITEM')
@@ -124,6 +147,10 @@ def apply(row,registry,inputs,buffers,evidence):
  elif og:
   og_raw,om=clean(files[og],PurePosixPath(og).suffix.lower(),'og',evidence);own=dict(sha256=om['sha256'],blob='objects/'+om['sha256']+om['ext'],ext=om['ext'])
  if old is None:
+  if final_tree and any(existing['collection']==col and
+                        any(rev['sha256']==meta['sha256'] for rev in existing['revisions'])
+                        for existing in registry['items'].values()):
+   raise Reject('DUPLICATE_ORIGINAL')
   n=registry['counters'][col]+1;key=f'bgzona-{COLS[col]}-{n:05d}';need(key not in registry['items'],'ID_COLLISION')
   registry['counters'][col]=n;old=dict(id=key,collection=col,number=n,page_url=f'/{col}/'+('kolaj-' if col=='kolaji' else 'p-')+f'{n:05d}/',state='published',slideshow=col=='kolaji',revisions=[])
  if not old['revisions'] or changed and meta['sha256']!=old['revisions'][-1]['sha256']:
@@ -178,24 +205,46 @@ def verify_snapshot(root,sid):
 def initialize(*args,**kwargs):
  raise Stop('USE_PUBLIC_EXPORT_BOOTSTRAP')
 
-def publish(source,root,target=None):
+def publish(source,root,target=None,*,final_tree=False):
  with lock(root):
   state=json.loads((root/'state.json').read_bytes());need(state.get('baseline_complete',True),'MIGRATION_BASELINE_INCOMPLETE');folder,registry=verify_snapshot(root,state['snapshot']);head=target or git(source,'rev-parse','HEAD').decode().strip()
   need(re.fullmatch('[a-f0-9]{40}',head) is not None,'SOURCE_COMMIT');need(git(source,'rev-list','--max-parents=0',head).decode().strip()==state['source_genesis'],'SOURCE_REPOSITORY_CHANGED');git(source,'merge-base','--is-ancestor',state['source_cursor'],head)
   from reconstruction import rebuild
   source_inputs,bindings=rebuild(source,state,registry)
   commits=git(source,'rev-list','--reverse',state['source_cursor']+'..'+head).decode().splitlines();results=[]
+  if final_tree and commits:
+   parent=state['source_cursor'];need(len(commits)<=512,'SOURCE_HISTORY_LIMIT')
+   for commit in commits:
+    need(git(source,'show','-s','--format=%P',commit).decode().split()==[parent],'NONLINEAR_SOURCE_HISTORY')
+    parent=commit
+   commits=[head]
   for commit in commits:
-   parents=git(source,'show','-s','--format=%P',commit).decode().split();need(parents==[state['source_cursor']],'NONLINEAR_SOURCE_HISTORY')
+   parents=git(source,'show','-s','--format=%P',commit).decode().split();need(final_tree or parents==[state['source_cursor']],'NONLINEAR_SOURCE_HISTORY')
    files=source_files(source,commit);inputs=deepcopy(source_inputs);buffers={p.split('/',1)[1]: (folder/p).read_bytes() for p in json.loads((folder/'manifest.json').read_bytes())['files'] if p.startswith(('artifact/','historical/'))};reports=[];evidence=[];before=digest(data(registry))
-   for slot,(unit,row) in enumerate(units(files,registry).items()):
+   source_rows=units(files,registry)
+   previous_rows=units(source_files(source,state['source_cursor']),registry) if final_tree else {}
+   replaced=set()
+   if final_tree:
+    for unit,row in source_rows.items():
+     if row['id'] and all(path.startswith('incoming/replace/') for path in row['files']):
+      key,target_row=incoming_target(source_rows,inputs,unit)
+      need(target_row is not None,'REPLACEMENT_ID_NOT_EDITABLE')
+      target_row['files'].update(row['files'])
+      replaced.add(unit)
+   for slot,(unit,row) in enumerate(source_rows.items()):
+    if unit in replaced:continue
+    if final_tree and row['id'] is None and inputs.get(unit,{}).get('item') in source_rows:
+     need(unit in previous_rows and previous_rows[unit]['files']==row['files'],'MOVE_ALREADY_COMPLETED')
+     continue
     next_reg,next_inputs,next_buffers=deepcopy(registry),deepcopy(inputs),dict(buffers);proof=[]
     try:
-     key,status=apply(row,next_reg,next_inputs,next_buffers,proof);registry,inputs,buffers=next_reg,next_inputs,next_buffers;evidence.extend(proof)
+     prior=existing_input(inputs,unit,row) if final_tree else None
+     key,status=apply(row,next_reg,next_inputs,next_buffers,proof,old_input=prior,final_tree=final_tree);registry,inputs,buffers=next_reg,next_inputs,next_buffers;evidence.extend(proof)
      if status=='ACCEPTED':bindings[unit]=dict(source=commit,slot=slot,item=key)
      reports.append(dict(item=key,status=status,reason=status))
     except Reject as error:
      reason=str(error).split(':',1)[0];reason=reason if re.fullmatch('[A-Z0-9_]+',reason) else 'ITEM_REJECTED'
+     if final_tree:raise Stop(reason) from None
      reports.append(dict(item=row['id'],status='SKIPPED',reason=reason))
    accepted=sum(r['status']=='ACCEPTED' for r in reports);skipped=sum(r['status']=='SKIPPED' for r in reports)
    if digest(data(registry))!=before:

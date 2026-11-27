@@ -15,6 +15,10 @@ def rebuild(source,state,registry):
   for binding in group:
    P.need(binding['slot']<len(rows),'BINDING_SLOT');unit,row=rows[binding['slot']]
    P.need(unit not in bindings and (row['id'] is None or row['id']==binding['item']) and row['collection']==registry['items'][binding['item']]['collection'],'AMBIGUOUS_BINDING')
+   if row['id'] is None:
+    replacement=dict(rows).get(binding['item'])
+    if replacement and all(path.startswith('incoming/replace/') for path in replacement['files']):
+     row=dict(row,files=row['files']|replacement['files'])
    inputs[unit]=comparison(row,binding['item']);bindings[unit]=dict(binding)
   del rows  # Retain only comparisons, not copies of original bytes for every historical commit.
  return inputs,bindings
