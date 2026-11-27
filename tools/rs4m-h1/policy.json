@@ -71,7 +71,7 @@
     "source_ref": "refs/heads/cp2b-private-standard-source-r1",
     "source_workflow": ".github/workflows/cp2b-push-proof.yml",
     "source_workflow_id": 407190822,
-    "source_workflow_sha256": "6489757d28f3c6d1e05a5c5949117f32472ad664c1c4d5e8469a3503cec8b53a",
+    "source_workflow_sha256": "af67c717e7e773eea8a1bfd0b33400d96164889f79b03f9ee2e2f815ab73758b",
     "private_workflow_id": 419182651,
     "relay_workflow_id": 411050691,
     "relay_workflow": ".github/workflows/c5-private-lab-relay.yml",
