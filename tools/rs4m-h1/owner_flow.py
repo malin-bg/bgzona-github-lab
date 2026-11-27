@@ -1,5 +1,5 @@
 """Opt-in owner-flow callers over existing H1I/P4. No publisher/recovery rewrite.
-The existing Lab OWNER/admin-preflight contract is deliberately unchanged.
+Owner and live Lab ruleset checks share the same reviewed authority policy.
 """
 from pathlib import Path
 from uuid import UUID
@@ -26,7 +26,7 @@ def config(policy):
           if real(c) else c.get('enabled') is True)
  P.need(enabled,'OWNER_ROUTE_DISABLED')
  P.need(c['source_ref'] in ('refs/heads/cp2b-private-standard-source-r1','refs/heads/synthetic-source'),'OWNER_SOURCE_REF')
- P.need(policy['control_protection_authority']=={'mode':'owner-admin-preflight-and-live-effective','expected_bypass_actors':[],'no_ruleset_update_since_run_creation':True},'LAB_AUTHORITY_REVIEW_REQUIRED')
+ P.control_authority(policy)
  return c
 
 def real(c):

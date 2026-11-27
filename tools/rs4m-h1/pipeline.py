@@ -110,20 +110,29 @@ def control_time(value):
  need(parsed.tzinfo is not None,'CONTROL_TIMESTAMP');return parsed
 
 
+def control_authority(policy):
+ authority=policy.get('control_protection_authority')
+ need(isinstance(authority,dict) and set(authority)=={'node_id','verified_no_bypass_at'}
+      and isinstance(authority['node_id'],str)
+      and re.fullmatch(r'RRS_[A-Za-z0-9_-]+',authority['node_id']),
+      'LAB_AUTHORITY_REVIEW_REQUIRED')
+ return authority['node_id'],control_time(authority['verified_no_bypass_at'])
+
+
 def control_protection(policy,token,run_created_at):
  # Normal callers can see effective rules but GitHub hides the bypass list.
  # In that case require the unchanged, independently verified ruleset revision.
  created=control_time(run_created_at);expected_types=['deletion','non_fast_forward']
- authority=policy['control_protection_authority']
+ node_id,verified_no_bypass_at=control_authority(policy)
  def view(row):
   need(isinstance(row,dict) and row.get('id')==policy['ruleset_id'] and row.get('target')=='branch' and row.get('source_type')=='Repository' and row.get('source')==policy['lab_repo'] and row.get('enforcement')=='active' and row.get('conditions')==policy['ruleset_conditions'],'CONTROL_PROTECTION')
   rules=row.get('rules');need(isinstance(rules,list) and len(rules)==len(expected_types) and all(isinstance(r,dict) and set(r)=={'type'} for r in rules) and sorted(r['type'] for r in rules)==expected_types,'CONTROL_PROTECTION')
   updated=control_time(row.get('updated_at'));need(updated<created,'CONTROL_CHANGED_SINCE_DISPATCH')
-  need(row.get('node_id')==authority['node_id'],'CONTROL_RULESET_IDENTITY')
+  need(row.get('node_id')==node_id,'CONTROL_RULESET_IDENTITY')
   if 'bypass_actors' in row:
    need(row['bypass_actors']==[],'CONTROL_BYPASS_PRESENT')
   else:
-   need(updated==control_time(authority['verified_no_bypass_at']),'CONTROL_BYPASS_UNVERIFIED')
+   need(updated==verified_no_bypass_at,'CONTROL_BYPASS_UNVERIFIED')
   return updated
  path='/rulesets/'+str(policy['ruleset_id']);before=view(api(policy['lab_repo'],path,token))
  branch=policy['control_ref'].removeprefix('refs/heads/');need(branch=='automation-control','CONTROL_REF')
