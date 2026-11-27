@@ -53,7 +53,7 @@ def validate(folder):
    if rel in ('registry.json','expected-files.json','artifact/catalog.json'):continue
    P.need(rel.startswith(('artifact/','historical/')),'PUBLIC_SNAPSHOT_NAMESPACE');image_path(rel.split('/',1)[1],set(reg['items']))
   for key,item in reg['items'].items():
-   P.need(set(item)=={'id','collection','number','page_url','state','slideshow','description','desired_revision','revisions','og'},'PUBLIC_ITEM_FIELDS')
+   P.need(set(item)-{'activity'}=={'id','collection','number','page_url','state','slideshow','description','desired_revision','revisions','og'},'PUBLIC_ITEM_FIELDS');P.read_activity(item)
    images=[(v['public_path'],v) for v in item['revisions']]
    for v in item['revisions']:P.need(set(v)=={'number','public_path','ext','format','width','height','frames','durations_ms','loop','sha256','bytes','blob'},'PUBLIC_REVISION_FIELDS')
    if item['og']:

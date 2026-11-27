@@ -5,7 +5,7 @@ from pathlib import Path,PurePosixPath
 from contextlib import contextmanager
 from copy import deepcopy
 from hashlib import sha256
-import argparse,json,os,re,subprocess,sys,unicodedata
+import argparse,json,os,re,subprocess,sys,time,unicodedata
 ROOT=Path(__file__).resolve().parent
 from runtime_bootstrap import load
 DEPENDENCIES=load()
@@ -239,6 +239,31 @@ def apply(row,registry,inputs,buffers,evidence,*,old_input=None, final_tree=Fals
  registry['items'][key]=old;inputs[identity]=dict(item=key,unit=stamp,managed_image=hashes[image],replacement=source_sha if replacement else None,og_input=hashes[og] if og else None)
  return key,'ACCEPTED'
 
+def read_activity(item):
+ if 'activity' not in item:return {}
+ value=item['activity']
+ need(type(value) is dict and bool(value) and value.keys()<={'published_at','updated_at'}
+      and all(type(v) is int and 0<v<=253402300799 for v in value.values()),'PUBLIC_MEDIA_ACTIVITY')
+ if 'published_at' in value and 'updated_at' in value:
+  need(value['published_at']<=value['updated_at'],'PUBLIC_MEDIA_ACTIVITY_ORDER')
+ return value
+
+
+def mark_activity(before, after, accepted_at):
+ def signature(item):
+  og=item['og']
+  return item['description'],item['revisions'][-1]['sha256'],og['sha256'] if og else None
+ for key,item in after.items():
+  if item['state']!='published':continue
+  old=before.get(key)
+  if old is None:
+   item['activity']={'published_at':accepted_at}
+  elif old['state']=='published' and signature(old)!=signature(item):
+   dates=dict(old.get('activity',{}))
+   dates['updated_at']=max(accepted_at,*dates.values()) if dates else accepted_at
+   item['activity']=dates
+
+
 def snapshot(root,registry,buffers,source):
  catalog=[];payload={};hashes={p:digest(raw) for p,raw in buffers.items()};file_hashes={}
  for key,item in sorted(registry['items'].items()):
@@ -252,6 +277,7 @@ def snapshot(root,registry,buffers,source):
   payload['artifact/'+path]=buffers[path];file_hashes['artifact/'+path]=hashes[path]
   if ogpath is not None:
    row['og']='/'+ogpath;payload['artifact/'+ogpath]=buffers[ogpath];file_hashes['artifact/'+ogpath]=hashes[ogpath]
+  if 'activity' in item:row['activity']=read_activity(item)
   catalog.append(row)
  current={p.removeprefix('artifact/') for p in payload}
  for path,raw in buffers.items():
@@ -297,6 +323,7 @@ def publish(source,root,target=None,*,final_tree=False):
   for commit in commits:
    parents=git(source,'show','-s','--format=%P',commit).decode().split();need(final_tree or parents==[state['source_cursor']],'NONLINEAR_SOURCE_HISTORY')
    files=source_files(source,commit);inputs=deepcopy(source_inputs);buffers={p.split('/',1)[1]: (folder/p).read_bytes() for p in json.loads((folder/'manifest.json').read_bytes())['files'] if p.startswith(('artifact/','historical/'))};reports=[];evidence=[];before=digest(data(registry))
+   before_items=registry['items']
    source_rows=units(files,registry)
    previous_rows=units(source_files(source,state['source_cursor']),registry) if final_tree else {}
    if final_tree:verify_cleanup(previous_rows,source_rows,inputs)
@@ -330,6 +357,7 @@ def publish(source,root,target=None,*,final_tree=False):
      if final_tree:raise Stop(reason) from None
      reports.append(dict(item=row['id'],status='SKIPPED',reason=reason))
    accepted=sum(r['status']=='ACCEPTED' for r in reports);skipped=sum(r['status']=='SKIPPED' for r in reports)
+   if final_tree:mark_activity(before_items,registry['items'],int(time.time()))
    if digest(data(registry))!=before:
     registry['seq']+=1;registry['previous']=before;state['snapshot']=snapshot(root,registry,buffers,commit)
    source_inputs=inputs;state.update(source_cursor=commit,source_bindings=sorted(bindings.values(),key=lambda x:(x['item'],x['source'],x['slot'])));atomic(root/'state.json',data(state));folder=root/'snapshots'/state['snapshot']  # Same-process atomic output; verify once at the next read/consumer boundary.

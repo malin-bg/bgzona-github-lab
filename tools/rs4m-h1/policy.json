@@ -75,7 +75,7 @@
     "relay_workflow_id": 411050691,
     "relay_workflow": ".github/workflows/c5-private-lab-relay.yml",
     "Lab_mode": "b-owner",
-    "DEV_code_commit": "918c965de5bc1901b28eae5a145f44c92ed388ab",
+    "DEV_code_commit": "0fb422f380fa3bbe42543fc474a0b8466b4e228e",
     "test_scope": "REAL_ONLY; exact disabled setup",
     "relay_workflow_sha256": "3711b2a96ad87732673223bb1f54d9d4ad3da236f4b9291cabfb6045c83267db"
   }

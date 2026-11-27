@@ -50,6 +50,16 @@ def read(binding):
  need(stream.read()==b'','GIT_BATCH_TRAILING')
  value=validate(binding,state,files);value['proof'].update(authority_root=T.ANCHOR,trusted_ref=T.REF,observed_remote_head=observed_head);return value
 
+def read_activity(item):
+ if 'activity' not in item:return {}
+ value=item['activity']
+ need(type(value) is dict and bool(value) and value.keys()<={'published_at','updated_at'}
+      and all(type(v) is int and 0<v<=253402300799 for v in value.values()),'PUBLIC_MEDIA_ACTIVITY')
+ if 'published_at' in value and 'updated_at' in value:
+  need(value['published_at']<=value['updated_at'],'PUBLIC_MEDIA_ACTIVITY_ORDER')
+ return value
+
+
 def validate(binding,state,files):
  sid=binding['snapshot'];manifest=strict(files['manifest.json']);need(digest(data(manifest))==sid,'MANIFEST_IDENTITY')
  need(set(files)==set(manifest['files'])|{'manifest.json'},'SNAPSHOT_FILE_SET')
@@ -77,6 +87,9 @@ def validate(binding,state,files):
    from PIL import Image
    with Image.open(BytesIO(public[rel])) as im:alpha=im.convert('RGBA').getextrema()[3][0]<255
   target=dict(collection=col,stem=key,number=n,revision=row['revision'],sha256=row['sha256'],ext=rev['ext'],source=rel,publicPath=rel,alpha=alpha,slideshow=row['slideshow'],txt=f'txt/{key}.txt')
+  dates=read_activity(item)
+  need(('activity' in row)==('activity' in item) and read_activity(row)==dates,'CATALOG_ACTIVITY')
+  if dates:target['activity']=dates
   need(Path(rel).suffix==rev['ext'],'ORIGINAL_FORMAT_PATH')
   if item['og']:
    og=item['og'];expected=og.get('public_path',f"/{col}/og/{key}-{og['sha256'][:12]}{og['ext']}");need(row.get('og')==expected and 'artifact/'+expected[1:] in files,'OWN_OG_BINDING');target.update(og=expected[1:],ogPublicPath=expected[1:])
