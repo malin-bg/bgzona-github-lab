@@ -98,11 +98,89 @@ def bundle(row):
 def og_path(col,key,own):
  return own.get('public_path',f'{col}/og/{key}-{own["sha256"][:12]}{own["ext"]}').lstrip('/')
 
-def incoming_target(rows, inputs, item):
- matches=[(key,row) for key,row in rows.items()
-          if row['id'] is None and inputs.get(key,{}).get('item')==item]
- need(len(matches)<=1,'AMBIGUOUS_BOUND_INCOMING')
- return matches[0] if matches else (None,None)
+def request_role(item, path):
+    name = PurePosixPath(path).name.casefold()
+    stem, ext = PurePosixPath(name).stem, PurePosixPath(name).suffix
+    if name == item + ".txt":
+        return "txt"
+    if name == "og.txt":
+        return "clear_og"
+    if stem in ("og", item + ".og") or stem.endswith(".og"):
+        if stem in ("og", item + ".og") and ext in (".jpg", ".png"):
+            return "og"
+        raise Stop("INVALID_OG_SIDECAR")
+    if ext in EXTS:
+        return "replacement"
+    raise Stop("INVALID_REPLACEMENT_FORMAT")
+
+
+def request_files(row):
+ return {p:raw for p,raw in row['files'].items() if p.startswith('incoming/replace/')}
+
+
+def request_parts(item, files):
+ parts={}
+ for path,raw in files.items():
+  role=request_role(item,path)
+  need(role not in parts,'AMBIGUOUS_REPLACEMENT_REQUEST')
+  parts[role]=(path,raw)
+ need(not {'og','clear_og'}<=parts.keys(),'AMBIGUOUS_REPLACEMENT_REQUEST')
+ return parts
+
+
+def verify_cleanup(previous, current, inputs):
+ # Accept only exact bytes reconstructed from accepted PRIVATE source bindings.
+ accepted={}
+ for prior in inputs.values():
+  for path,checksum in prior['files'].items():
+   if path.startswith('incoming/'):
+    accepted.setdefault(path,set()).add(checksum)
+ for unit,row in previous.items():
+  old=row['files'] if row['id'] is None else request_files(row)
+  new=current.get(unit,{'files':{}})
+  files=new['files'] if row['id'] is None else request_files(new)
+  removed=old.keys()-files.keys()
+  need(all(digest(old[p]) in accepted.get(p,()) for p in removed),'CLEANUP_NOT_ACCEPTED')
+  if removed and row['id'] is None:
+   need(all(old.get(p)==raw for p,raw in files.items()),'CLEANUP_WITH_INCOMING_EDIT')
+
+
+def apply_request(item, files, previous, registry, buffers, evidence):
+ current=request_parts(item,files)
+ prior=request_parts(item,previous)
+ delta={role:v for role,v in current.items() if prior.get(role)!=v}
+ if not delta:return 'UNCHANGED'
+ row=registry['items'][item]
+ if row['state']!='published':raise Reject('ARCHIVED_ITEM')
+ if 'replacement' in delta:
+  path,raw=delta['replacement'];original,meta=clean(raw,PurePosixPath(path).suffix.lower(),'original',evidence)
+  append_revision(row,meta)
+  buffers[row['revisions'][-1]['public_path'].lstrip('/')]=original
+ if 'txt' in delta:row['description']=text(delta['txt'][1])
+ if 'og' in delta:
+  path,raw=delta['og'];cleaned,meta=clean(raw,PurePosixPath(path).suffix.lower(),'og',evidence)
+  og=dict(sha256=meta['sha256'],blob='objects/'+meta['sha256']+meta['ext'],ext=meta['ext'])
+  public=og_path(row['collection'],item,og)
+  row['og']=og|{'public_path':'/'+public};buffers[public]=cleaned
+ if 'clear_og' in delta:
+  if text(delta['clear_og'][1]):raise Reject('OG_CLEAR_REQUIRES_EMPTY_FILE')
+  row['og']=None
+ row['desired_revision']=len(row['revisions'])
+ return 'ACCEPTED'
+
+
+def append_revision(item, meta):
+ if item['revisions'] and item['revisions'][-1]['sha256']==meta['sha256']:return
+ number=len(item['revisions'])+1
+ suffix='' if number==1 else f'-r{number:04d}-{meta["sha256"][:12]}'
+ key=item['id'];col=item['collection']
+ item['revisions'].append(meta|dict(number=number,blob='objects/'+meta['sha256']+meta['ext'],
+                                  public_path=f'/{col}/full/{key}{suffix}{meta["ext"]}'))
+
+
+def managed_row(row):
+ return dict(row,files={p:raw for p,raw in row['files'].items() if p.startswith('library/')})
+
 
 def existing_input(inputs, unit, row):
  old=inputs.get(unit,{})
@@ -153,9 +231,7 @@ def apply(row,registry,inputs,buffers,evidence,*,old_input=None, final_tree=Fals
    raise Reject('DUPLICATE_ORIGINAL')
   n=registry['counters'][col]+1;key=f'bgzona-{COLS[col]}-{n:05d}';need(key not in registry['items'],'ID_COLLISION')
   registry['counters'][col]=n;old=dict(id=key,collection=col,number=n,page_url=f'/{col}/'+('kolaj-' if col=='kolaji' else 'p-')+f'{n:05d}/',state='published',slideshow=col=='kolaji',revisions=[])
- if not old['revisions'] or changed and meta['sha256']!=old['revisions'][-1]['sha256']:
-  number=len(old['revisions'])+1;suffix='' if number==1 else f'-r{number:04d}-{meta["sha256"][:12]}'
-  rev=meta|dict(number=number,blob='objects/'+meta['sha256']+meta['ext'],public_path=f'/{col}/full/{key}{suffix}{meta["ext"]}');old['revisions'].append(rev)
+ if changed:append_revision(old,meta)
  if own:own['public_path']='/'+og_path(col,key,own)
  old.update(description=description,og=own,desired_revision=len(old['revisions']))
  buffers[old['revisions'][-1]['public_path'].lstrip('/')]=original
@@ -223,23 +299,30 @@ def publish(source,root,target=None,*,final_tree=False):
    files=source_files(source,commit);inputs=deepcopy(source_inputs);buffers={p.split('/',1)[1]: (folder/p).read_bytes() for p in json.loads((folder/'manifest.json').read_bytes())['files'] if p.startswith(('artifact/','historical/'))};reports=[];evidence=[];before=digest(data(registry))
    source_rows=units(files,registry)
    previous_rows=units(source_files(source,state['source_cursor']),registry) if final_tree else {}
-   replaced=set()
-   if final_tree:
-    for unit,row in source_rows.items():
-     if row['id'] and all(path.startswith('incoming/replace/') for path in row['files']):
-      key,target_row=incoming_target(source_rows,inputs,unit)
-      need(target_row is not None,'REPLACEMENT_ID_NOT_EDITABLE')
-      target_row['files'].update(row['files'])
-      replaced.add(unit)
+   if final_tree:verify_cleanup(previous_rows,source_rows,inputs)
    for slot,(unit,row) in enumerate(source_rows.items()):
-    if unit in replaced:continue
-    if final_tree and row['id'] is None and inputs.get(unit,{}).get('item') in source_rows:
-     need(unit in previous_rows and previous_rows[unit]['files']==row['files'],'MOVE_ALREADY_COMPLETED')
-     continue
     next_reg,next_inputs,next_buffers=deepcopy(registry),deepcopy(inputs),dict(buffers);proof=[]
     try:
-     prior=existing_input(inputs,unit,row) if final_tree else None
-     key,status=apply(row,next_reg,next_inputs,next_buffers,proof,old_input=prior,final_tree=final_tree);registry,inputs,buffers=next_reg,next_inputs,next_buffers;evidence.extend(proof)
+     key=row['id']
+     if final_tree and key is not None:
+      previous=previous_rows.get(unit,{'files':{}})
+      managed=managed_row(row)
+      status='UNCHANGED'
+      if managed['files'] and managed_row(previous)['files']!=managed['files']:
+       prior=existing_input(inputs,unit,managed)
+       key,status=apply(managed,next_reg,next_inputs,next_buffers,proof,old_input=prior,final_tree=True)
+      request_status=apply_request(key,request_files(row),request_files(previous),next_reg,next_buffers,proof)
+      if request_status=='ACCEPTED':status=request_status
+     else:
+      prior=existing_input(inputs,unit,row) if final_tree else None
+      if final_tree and prior:
+       key=prior['item']
+       if all(prior['files'].get(p)==digest(raw) for p,raw in row['files'].items()):continue
+       need(key not in source_rows or not managed_row(source_rows[key])['files'],'MOVE_ALREADY_COMPLETED')
+       need(all(not p.startswith('incoming/'+row['collection']+'/') or p in row['files']
+                for p in prior['files']),'EDIT_CLEANED_INCOMING_BY_ID')
+      key,status=apply(row,next_reg,next_inputs,next_buffers,proof,old_input=prior,final_tree=final_tree)
+     registry,inputs,buffers=next_reg,next_inputs,next_buffers;evidence.extend(proof)
      if status=='ACCEPTED':bindings[unit]=dict(source=commit,slot=slot,item=key)
      reports.append(dict(item=key,status=status,reason=status))
     except Reject as error:

@@ -2,8 +2,16 @@
 import publisher as P
 
 def comparison(row,item):
- image,txt,og,replacement=P.bundle(row);hashes={p:P.digest(raw) for p,raw in sorted(row['files'].items())}
- return dict(item=item,unit=P.digest(P.data(hashes)),managed_image=hashes[image],replacement=hashes[replacement] if replacement else None,og_input=hashes[og] if og else None)
+ files=row['files'];requests=P.request_files(row)
+ ordinary=dict(row,files={p:raw for p,raw in files.items() if p not in requests})
+ hashes={p:P.digest(raw) for p,raw in sorted(files.items())}
+ parts=P.request_parts(item,requests)
+ image,og=None,None
+ if ordinary['files']:
+  image,_,og,_=P.bundle(ordinary)
+ return dict(item=item,unit=P.digest(P.data(hashes)),managed_image=hashes.get(image),
+             replacement=hashes[parts['replacement'][0]] if 'replacement' in parts else None,
+             og_input=hashes.get(og),files=hashes)
 
 def rebuild(source,state,registry):
  P.need('source_inputs' not in state,'PRIVATE_STATE_IN_PUBLIC_INPUT');inputs={};bindings={};groups={}

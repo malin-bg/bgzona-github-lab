@@ -268,7 +268,9 @@ def prepare(policy,kind,code,event,binding,work,deps):
   advice={'DUPLICATE_ORIGINAL':'This original already belongs to a publication in the same collection. Edit the existing ID.',
           'REPLACEMENT_ID_NOT_EDITABLE':'Use the five-digit number of an existing published item.',
           'MOVE_ALREADY_COMPLETED':'Remove the copied incoming bundle and edit its library folder.',
-          'CLEANUP_BINDING':'Check the published ID and move its complete incoming bundle unchanged.',
+          'CLEANUP_BINDING':'Check the accepted publication ID and the original bytes.',
+           'CLEANUP_NOT_ACCEPTED':'Delete only already accepted incoming files with unchanged bytes.',
+           'EDIT_CLEANED_INCOMING_BY_ID':'Use the published ID under incoming/replace to edit a partially cleaned bundle.',
           'MOVE_BUNDLE_EXACT_BYTES':'Move the original unmodified. Use incoming/replace for a new revision.',
           'AMBIGUOUS_OR_INCOMPLETE_BUNDLE':'Keep one original, one optional TXT and one optional OG.'}
   if reason.startswith('PRIVACY_'): print('Privacy Gate rejected a file. Export a clean image in the original format and push the correction.')
